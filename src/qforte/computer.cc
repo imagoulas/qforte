@@ -964,7 +964,7 @@ std::complex<double> Computer::direct_gate_exp_val(const Gate& qg) {
 std::vector<std::string> Computer::str() const {
     std::vector<std::string> terms;
     for (size_t i = 0; i < nbasis_; i++) {
-        if (std::abs(coeff_[i]) >= print_threshold_) {
+        if (std::abs(coeff_[i]) > print_threshold_) {
             terms.push_back(fmt::format("({:f} {:+f} i) {}", std::real(coeff_[i]),
                                         std::imag(coeff_[i]), basis_[i].str(nqubit_)));
         }

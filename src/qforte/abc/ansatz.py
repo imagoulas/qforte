@@ -10,6 +10,7 @@ import qforte as qf
 
 from qforte.utils.state_prep import build_Uprep
 from qforte.utils.trotterization import trotterize
+from qforte.utils.fermion_qubit_excitations import fermion_qubit_excitation
 
 class UCC:
     """A mixin class for implementing the UCC circuit ansatz, to be inherited by a
@@ -28,6 +29,13 @@ class UCC:
         """
         temp_pool = qf.SQOpPool()
         tamps = self._tamps if amplitudes is None else amplitudes
+
+        if self._qubit_excitations:
+            U = qf.Circuit()
+            for tamp, top in zip(tamps, self._tops):
+                U.add(fermion_qubit_excitation(tamp, self._pool_obj[top][1].terms()[1][1], self._pool_obj[top][1].terms()[1][2]))
+            return U
+
         for tamp, top in zip(tamps, self._tops):
             temp_pool.add(tamp, self._pool_obj[top][1])
 

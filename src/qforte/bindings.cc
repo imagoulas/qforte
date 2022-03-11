@@ -46,7 +46,8 @@ PYBIND11_MODULE(qforte, m) {
         .def("terms", &SQOperator::terms)
         .def("canonical_order", &SQOperator::canonical_order)
         .def("simplify", &SQOperator::simplify)
-        .def("jw_transform", &SQOperator::jw_transform)
+        .def("jw_transform", &SQOperator::jw_transform, py::arg("qubit_excitation") = false)
+        .def("mult_coeffs", &SQOperator::mult_coeffs)
         .def("str", &SQOperator::str)
         .def("__str__", &SQOperator::str)
         .def("__repr__", &SQOperator::str);
@@ -206,7 +207,7 @@ PYBIND11_MODULE(qforte, m) {
         "gate",
         [](std::string type, size_t target, size_t control) {
             // test for two-qubit gates that require no parameters
-            auto vec = {"SWAP", "cV", "CNOT", "cX", "cY", "cZ"};
+            auto vec = {"SWAP", "cV", "CNOT", "cX", "aCNOT", "acX", "cY", "cZ"};
             if (std::find(vec.begin(), vec.end(), type) != vec.end()) {
                 return make_gate(type, target, control, 0.0);
             }
