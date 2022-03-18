@@ -190,6 +190,7 @@ class SPQE(UCCPQE):
         print('Trotter order (rho):                     ',  self._trotter_order)
         print('Trotter number (m):                      ',  self._trotter_number)
         print('Use fast version of algorithm:           ',  str(self._fast))
+        print('Use qubit excitation representation:     ',  self._qubit_excitations)
         if(self._fast):
             print('Measurement varience thresh:             ',  'NA')
         else:

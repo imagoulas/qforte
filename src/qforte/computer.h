@@ -157,7 +157,7 @@ class Computer {
     /// the number of two-qubit operations
     size_t ntwo_ops_ = 0;
     /// the threshold for priting a determinant
-    double print_threshold_ = 0.0;
+    double print_threshold_ = 1.0e-14;
     /// the threshold for doing operations with elements of gate matricies
     double compute_threshold_ = 1.0e-16;
 

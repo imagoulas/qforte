@@ -33,7 +33,7 @@ class UCC:
         if self._qubit_excitations:
             U = qf.Circuit()
             for tamp, top in zip(tamps, self._tops):
-                U.add(fermion_qubit_excitation(tamp, self._pool_obj[top][1].terms()[1][1], self._pool_obj[top][1].terms()[1][2]))
+                U.add(fermion_qubit_excitation(tamp * self._pool_obj[top][1].terms()[1][0], self._pool_obj[top][1].terms()[1][1], self._pool_obj[top][1].terms()[1][2]))
             return U
 
         for tamp, top in zip(tamps, self._tops):

@@ -14,6 +14,7 @@ from qforte.experiment import *
 from qforte.utils.transforms import *
 from qforte.utils.state_prep import ref_to_basis_idx
 from qforte.utils.trotterization import trotterize
+from qforte.utils.fermion_qubit_excitations import fermion_qubit_excitation
 
 import numpy as np
 
@@ -169,10 +170,14 @@ class UCCVQE(VQE, UCC):
             Kmu = self._pool_obj[self._tops[mu]][1].jw_transform()
             Kmu.mult_coeffs(self._pool_obj[self._tops[mu]][0])
 
-            Umu, pmu = trotterize(Kmu_prev, factor=-tamp, trotter_number=self._trotter_number)
+            if self._qubit_excitations:
+                Umu = qf.Circuit()
+                Umu.add(fermion_qubit_excitation(-tamp * self._pool_obj[self._tops[mu + 1]][1].terms()[1][0], self._pool_obj[self._tops[mu + 1]][1].terms()[1][1], self._pool_obj[self._tops[mu + 1]][1].terms()[1][2]))
+            else:
+                Umu, pmu = trotterize(Kmu_prev, factor=-tamp, trotter_number=self._trotter_number)
 
-            if (pmu != 1.0 + 0.0j):
-                raise ValueError("Encountered phase change, phase not equal to (1.0 + 0.0i)")
+                if (pmu != 1.0 + 0.0j):
+                    raise ValueError("Encountered phase change, phase not equal to (1.0 + 0.0i)")
 
             qc_sig.apply_circuit(Umu)
             qc_psi.apply_circuit(Umu)
@@ -184,6 +189,7 @@ class UCCVQE(VQE, UCC):
             #reset Kmu |psi_i> -> |psi_i>
             qc_psi.set_coeff_vec(copy.deepcopy(psi_i))
             Kmu_prev = Kmu
+
 
         np.testing.assert_allclose(np.imag(grads), np.zeros_like(grads), atol=1e-7)
 
