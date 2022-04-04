@@ -190,7 +190,8 @@ class SPQE(UCCPQE):
         print('Trotter order (rho):                     ',  self._trotter_order)
         print('Trotter number (m):                      ',  self._trotter_number)
         print('Use fast version of algorithm:           ',  str(self._fast))
-        print('Use qubit excitation representation:     ',  self._qubit_excitations)
+        print('Use compact excitation circuits:         ',  self._compact_excitations)
+        print('Use qubit excitations:                   ',  self._qubit_excitations)
         if(self._fast):
             print('Measurement varience thresh:             ',  'NA')
         else:
@@ -352,7 +353,7 @@ class SPQE(UCCPQE):
 
                 qc_temp = qforte.Computer(self._nqb)
                 qc_temp.apply_circuit(self._Uprep)
-                qc_temp.apply_operator(sq_op.jw_transform())
+                qc_temp.apply_operator(sq_op.jw_transform(self._qubit_excitations))
                 sign_adjust = qc_temp.get_coeff_vec()[I]
 
                 res_m = coeffs[I] * sign_adjust

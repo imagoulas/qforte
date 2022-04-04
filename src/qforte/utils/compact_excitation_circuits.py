@@ -1,18 +1,20 @@
 """
-Functions for performing economical fermioninc excitations based on qubit excitations
+Functions for constructing compact quantum circuits for fermioninc/qubit excitations
 """
 
 import qforte as qf
 import numpy as np
 
-def fermion_qubit_excitation(theta, creation, annihilation):
+def compact_excitation_circuit(theta, creation, annihilation, qubit_excitations):
     """
-    This function constructs the quantum circuit of an exponentiated elementary SQOperator of
-    arbitrary rank, i.e.,
+    This function constructs compact quantum circuits for fermionic/qubit
+    excitations of the form
 
-    exp(theta * κ_μ), where κ_μ = t_μ - t_μ^\dagger,
+    exp(theta * κ_μ),
 
-    based on qubit excitations. This results in quantum circuits with the minimum (so far) number
+    where κ_μ is a second quantized (κ_μ = t_μ - t_μ^\dagger) or
+    qubit (κ_μ = Q_μ - Q_μ^\dagger) excitation operator.
+    The resulting quantum circuits have the minimum (so far) number
     of CNOTs. The original idea is reported in DOI: 10.1103/PhysRevA.102.062612.
 
     Arguments
@@ -27,24 +29,28 @@ def fermion_qubit_excitation(theta, creation, annihilation):
     annihilation: list of ints
         Indices of annihilation operators in the excitation component.
 
+    qubit_excitations: bool
+        Controls the use of qubit vs fermionic excitations.
+
     Returns
     =======
 
     circ: Circuit
-        Quantum circuit of fermionic excitation.
+        Quantum circuit of fermionic/qubit excitation.
     """
 
-    ### ABORT if not particle conserving
+    if len(creation) != len(annihilation):
+        raise ValueError("Compact fermionic/qubit excitations are implemented for particle-number-conserving operators only.")
 
-    # When using GSD, there are excitations of the form p^ q^ s q, etc.,
-    # Such excitations can be viewed as controled single excitations.
-    # For example, p^ q^ s q = - p^ s q^ q = - p^ s n_q, where n_q
-    # is the number operator of the signle-particle state q.
+    # When using GSD, there are excitations of the form p^ q^ s q, etc.
+    # Such excitations can be viewed as controled single excitations,
+    # and require special treatment.
     creation_unique = [x for x in creation if x not in annihilation]
     annihilation_unique = [x for x in annihilation if x not in creation]
     gsd_control = list(set(creation) & set(annihilation))
 
-    ### Abort if gsd_control contains more than one element
+    if len(gsd_control) > 1:
+        raise ValueError("A GSD excitation of the form p^ q^ p q was encountered!")
 
     gsd_sign = 1
     gsd_unique = False
@@ -63,17 +69,19 @@ def fermion_qubit_excitation(theta, creation, annihilation):
     circ = qf.Circuit()
 
     # Construct CNOT staircase associated with fermion sign
-    if gsd_unique:
-        CNOT_stair = fermion_sign_circuit(creation_unique, annihilation_unique)
-    else:
-        CNOT_stair = fermion_sign_circuit(creation, annihilation)
+    if not qubit_excitations:
+        if gsd_unique:
+            CNOT_stair = fermion_sign_circuit(creation_unique, annihilation_unique)
+        else:
+            CNOT_stair = fermion_sign_circuit(creation, annihilation)
 
-    circ.add(CNOT_stair)
+        circ.add(CNOT_stair)
 
-    circ.add(qubit_excitation(theta, creation_unique, annihilation_unique, gsd_control, gsd_sign))
+    circ.add(qubit_excitation(theta, creation_unique, annihilation_unique, gsd_control, gsd_sign, qubit_excitations))
 
     # Add adjoint of CNOT staircase
-    circ.add(CNOT_stair.adjoint())
+    if not qubit_excitations:
+        circ.add(CNOT_stair.adjoint())
 
     return circ
 
@@ -82,7 +90,7 @@ def fermion_sign_circuit(creation, annihilation):
     Function that constructs the quantum circuit responsible for computing the sign
     of a given fermionic excitation. The resulting quantum circuit is comprised of
     a single CNOT staircase and a single CZ gate independent of the many-body rank of the
-    second-quantized operator. The adjoint circuit is constructed in fermion_qubit_excitation.
+    second-quantized operator. The adjoint circuit is constructed in compact_excitation_circuit.
 
     Arguments
     =========
@@ -98,14 +106,12 @@ def fermion_sign_circuit(creation, annihilation):
 
     CNOT_circ: Circuit
         Quantum circuit of CNOT and CZ gates.
-
     """
 
     # number of qubits involved in excitation
     n_qubit = max(creation + annihilation) + 1
 
     # A 1 in a given column indicates a Z gate for this qubit.
-    # Similar for the following "annihilation" columns.
     aux = np.zeros((n_qubit, len(creation) + len(annihilation) + 1), dtype = bool)
     for i, create in enumerate(creation):
         for j in range(create):
@@ -141,9 +147,11 @@ def fermion_sign_circuit(creation, annihilation):
 
     return CNOT_circ
 
-def qubit_excitation(theta, creation, annihilation, gsd_control, gsd_sign):
+def qubit_excitation(theta, creation, annihilation, gsd_control, gsd_sign, qubit_excitations):
     """
-    Function that performs a qubit excitation.
+    Function that performs a "qubit" excitation. Note that, unless qubit_excitations=True,
+    the resulting circuit is not equivalent to a pure qubit excitation since sign factors
+    have been modified to adapt it for fermionic excitations.
 
     Arguments
     =========
@@ -167,11 +175,14 @@ def qubit_excitation(theta, creation, annihilation, gsd_control, gsd_sign):
         excitation of the form p^ q^ p s, p^ q^ r p, p^ q^ q s, or p^ q^ r q,
         in which case it equals "-1".
 
+    qubit_excitations: bool
+        Controls the use of qubit vs fermionic excitations.
+
     Returns
     =======
 
     circ: Circuit
-        Quantum circuit of qubit excitation.
+        Quantum circuit of "qubit" excitation.
     """
 
     circ = qf.Circuit()
@@ -184,13 +195,13 @@ def qubit_excitation(theta, creation, annihilation, gsd_control, gsd_sign):
 
     CNOT_circ_adjoint = circ.adjoint()
 
-    circ.add(multi_qubit_controlled_Ry(theta, creation[0], creation[1:], annihilation, gsd_control, gsd_sign))
+    circ.add(multi_qubit_controlled_Ry(theta, creation[0], creation[1:], annihilation, gsd_control, gsd_sign, qubit_excitations))
 
     circ.add(CNOT_circ_adjoint)
 
     return circ
 
-def multi_qubit_controlled_Ry(theta, target, control_creation, control_annihilation, gsd_control, gsd_sign):
+def multi_qubit_controlled_Ry(theta, target, control_creation, control_annihilation, gsd_control, gsd_sign, qubit_excitations):
     """
     Function that constructs a multi-qubit-controlled Ry gate as a series of
     single-qubit Ry rotations and two-qubit CNOT and aCNOT gates.
@@ -220,6 +231,9 @@ def multi_qubit_controlled_Ry(theta, target, control_creation, control_annihilat
         excitation of the form p^ q^ p s, p^ q^ r p, p^ q^ q s, or p^ q^ r q,
         in which case it equals "-1".
 
+    qubit_excitations: bool
+        Controls the use of qubit vs fermionic excitations.
+
     Returns
     =======
 
@@ -229,9 +243,8 @@ def multi_qubit_controlled_Ry(theta, target, control_creation, control_annihilat
     """
 
     # For a qubit excitation Q(theta) we need a multi-qubit-controlled Ry gate of
-    # angle -2*theta. The factor of 2 is taken into account when computing the
-    # "new_theta" angle for the relevant single-qubit Ry gates. The minus sign is
-    # incorporated in the "sign" variable.
+    # angle 2*theta. The factor of 2 is taken into account when computing the
+    # "new_theta" angle for the relevant single-qubit Ry gates.
 
     # using an ordering similar to Yordanov
     control_creation.reverse()
@@ -244,21 +257,23 @@ def multi_qubit_controlled_Ry(theta, target, control_creation, control_annihilat
     # the multiqubit Ry gate is 2*theta.
     new_theta = theta / (1 << (len(control_qubits) - 1))
 
-    # explain prefactor
-    prefactor = -1
-    rank = len(control_annihilation)
-    if rank == 1:
-        prefactor = 1
-    if not rank%2 and not rank%4:
-        prefactor = 1
-    elif not (rank - 1)%2 and not (rank - 1)%4:
-        prefactor = 1
-
     circ = qf.Circuit()
 
     for i in range(num_Ry_gates):
         sign = 1-2*(i%2)
-        sign *= prefactor * gsd_sign
+        if not qubit_excitations:
+            # In the case of fermionic excitations, there exists a sign factor that
+            # multiplies the angle theta of the multi-qubit-controlled Ry gate. The
+            # sign factor depends on the many-body rank of the excitation operator.
+            prefactor = -1
+            rank = len(control_annihilation)
+            if rank == 1:
+                prefactor = 1
+            if not rank%2 and not rank%4:
+                prefactor = 1
+            elif not (rank - 1)%2 and not (rank - 1)%4:
+                prefactor = 1
+            sign *= prefactor * gsd_sign
         circ.add(qf.gate('Ry', target, target, sign * new_theta))
         for j, control in enumerate(control_qubits):
             if not (i+1)%(num_Ry_gates/(1<<j+1)):

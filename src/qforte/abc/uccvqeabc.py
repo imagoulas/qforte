@@ -14,7 +14,7 @@ from qforte.experiment import *
 from qforte.utils.transforms import *
 from qforte.utils.state_prep import ref_to_basis_idx
 from qforte.utils.trotterization import trotterize
-from qforte.utils.fermion_qubit_excitations import fermion_qubit_excitation
+from qforte.utils.compact_excitation_circuits import compact_excitation_circuit
 
 import numpy as np
 
@@ -146,7 +146,7 @@ class UCCVQE(VQE, UCC):
         mu = M-1
 
         # find <sing_N | K_N | psi_N>
-        Kmu_prev = self._pool_obj[self._tops[mu]][1].jw_transform()
+        Kmu_prev = self._pool_obj[self._tops[mu]][1].jw_transform(self._qubit_excitations)
         Kmu_prev.mult_coeffs(self._pool_obj[self._tops[mu]][0])
 
         qc_psi.apply_operator(Kmu_prev)
@@ -167,12 +167,15 @@ class UCCVQE(VQE, UCC):
             else:
                 tamp = params[mu+1]
 
-            Kmu = self._pool_obj[self._tops[mu]][1].jw_transform()
+            Kmu = self._pool_obj[self._tops[mu]][1].jw_transform(self._qubit_excitations)
             Kmu.mult_coeffs(self._pool_obj[self._tops[mu]][0])
 
-            if self._qubit_excitations:
+            if self._compact_excitations:
                 Umu = qf.Circuit()
-                Umu.add(fermion_qubit_excitation(-tamp * self._pool_obj[self._tops[mu + 1]][1].terms()[1][0], self._pool_obj[self._tops[mu + 1]][1].terms()[1][1], self._pool_obj[self._tops[mu + 1]][1].terms()[1][2]))
+                Umu.add(compact_excitation_circuit(-tamp * self._pool_obj[self._tops[mu + 1]][1].terms()[1][0],
+                                                           self._pool_obj[self._tops[mu + 1]][1].terms()[1][1],
+                                                           self._pool_obj[self._tops[mu + 1]][1].terms()[1][2],
+                                                           self._qubit_excitations))
             else:
                 Umu, pmu = trotterize(Kmu_prev, factor=-tamp, trotter_number=self._trotter_number)
 
@@ -218,7 +221,7 @@ class UCCVQE(VQE, UCC):
         grads = np.zeros(len(self._pool_obj))
 
         for mu, (coeff, operator) in enumerate(self._pool_obj):
-            Kmu = operator.jw_transform()
+            Kmu = operator.jw_transform(self._qubit_excitations)
             Kmu.mult_coeffs(coeff)
             qc_psi.apply_operator(Kmu)
             grads[mu] = 2.0 * np.real(np.vdot(qc_sig.get_coeff_vec(), qc_psi.get_coeff_vec()))

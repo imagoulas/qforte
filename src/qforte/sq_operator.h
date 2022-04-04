@@ -57,6 +57,8 @@ class SQOperator {
 
     /// Return the QubitOperator object corresponding the the Jordan-Wigner
     /// transform of this sq operator. Calls simplify as a side-effect.
+    /// If qubit_excitation = true, replace fermionic creation/annihilation
+    /// operators by qubit ones.
     QubitOperator jw_transform(bool qubit_excitation = false);
 
     /// return a vector of string representing this quantum operator

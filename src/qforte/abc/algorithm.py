@@ -224,6 +224,13 @@ class AnsatzAlgorithm(Algorithm):
     _tamps : list
         A list of amplitudes (to be optimized) representing selected
         operators in the pool.
+
+    _compact_excitations: bool
+        Contols the use of compact quantum circuits for fermion/qubit
+        excitations.
+
+    _qubit_excitations: bool
+        Controls the use of qubit/fermionic excitations.
     """
 
     # TODO (opt major): write a C function that prepares this super efficiently
@@ -294,13 +301,14 @@ class AnsatzAlgorithm(Algorithm):
 
         return val
 
-    def __init__(self, *args, qubit_excitations=False, **kwargs):
+    def __init__(self, *args, compact_excitations=False, qubit_excitations=False, **kwargs):
         super().__init__(*args, **kwargs)
         self._curr_energy = 0
         self._Nm = []
         self._tamps = []
         self._tops = []
         self._pool_obj = qf.SQOpPool()
+        self._compact_excitations = compact_excitations
         self._qubit_excitations = qubit_excitations
 
         kwargs.setdefault('irrep', None)
