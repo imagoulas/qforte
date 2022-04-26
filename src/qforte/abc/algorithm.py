@@ -301,7 +301,7 @@ class AnsatzAlgorithm(Algorithm):
 
         return val
 
-    def __init__(self, *args, compact_excitations=False, qubit_excitations=False, **kwargs):
+    def __init__(self, *args, compact_excitations=False, qubit_excitations=False, diis_max_dim=8, **kwargs):
         super().__init__(*args, **kwargs)
         self._curr_energy = 0
         self._Nm = []
@@ -310,6 +310,7 @@ class AnsatzAlgorithm(Algorithm):
         self._pool_obj = qf.SQOpPool()
         self._compact_excitations = compact_excitations
         self._qubit_excitations = qubit_excitations
+        self._diis_max_dim = diis_max_dim
 
         kwargs.setdefault('irrep', None)
         if hasattr(self._sys, 'point_group'):

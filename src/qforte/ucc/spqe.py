@@ -11,6 +11,7 @@ from qforte.experiment import *
 from qforte.utils.transforms import *
 from qforte.utils.state_prep import *
 from qforte.utils.trotterization import trotterize
+from qforte.utils.point_groups import sq_op_find_symmetry
 
 import numpy as np
 
@@ -54,6 +55,7 @@ class SPQE(UCCPQE):
             M_omega = 'inf',
             opt_thresh = 1.0e-5,
             opt_maxiter = 30,
+            shift = 0.0,
             use_cumulative_thresh=True):
 
         if(self._state_prep_type != 'occupation_list'):
@@ -70,6 +72,7 @@ class SPQE(UCCPQE):
         self._use_cumulative_thresh = use_cumulative_thresh
         self._opt_thresh = opt_thresh
         self._opt_maxiter = opt_maxiter
+        self._shift = shift
 
         self._nbody_counts = []
         self._n_classical_params_lst = []
@@ -101,9 +104,29 @@ class SPQE(UCCPQE):
             if occupation:
                 self._nbody_counts.append(0)
 
+        # create a pool of particle number, Sz, and spatial symmetry adapted second quantized operators
+        mask_alpha = 0x5555555555555555
+        mask_beta = mask_alpha << 1
+        nalpha = sum(self._ref[0::2])
+        nbeta = sum(self._ref[1::2])
+        idx = -1
+        self._excitation_dictionary = {}
+        self._excitation_indices = []
         self._pool_obj = qf.SQOpPool()
-        for I in range(2 ** self._nqb):
-            self._pool_obj.add_term(0.0, self.get_op_from_basis_idx(I))
+        for I in range(1 << self._nqb):
+            alphas = [int(j) for j in bin(I & mask_alpha)[2:]]
+            betas = [int(j) for j in bin(I & mask_beta)[2:]]
+            if sum(alphas) == nalpha and sum(betas) == nbeta:
+                if sq_op_find_symmetry(self._sys.orb_irreps_to_int,
+                                       [len(alphas) - i - 1 for i, x in enumerate(alphas) if x],
+                                       [len(betas) -i - 1 for i, x in enumerate(betas) if x]) == 0:
+                    if idx == -1:
+                        idx += 1
+                        continue
+                    self._pool_obj.add_term(0.0, self.get_op_from_basis_idx(I))
+                    self._excitation_dictionary[I] = idx
+                    self._excitation_indices.append(I)
+                    idx += 1
 
         self.build_orb_energies()
         spqe_iter = 0
@@ -199,8 +222,9 @@ class SPQE(UCCPQE):
 
         opt_thrsh_str = '{:.2e}'.format(self._opt_thresh)
         spqe_thrsh_str = '{:.2e}'.format(self._spqe_thresh)
-        print('DIIS maxiter:                            ',  self._opt_maxiter)
-        print('DIIS residual-norm threshold (omega_r):  ',  opt_thrsh_str)
+        print('DIIS dimension:                          ', self._diis_max_dim)
+        print('Number of micro-iterations:              ',  self._opt_maxiter)
+        print('Micro-iteration residual-norm threshold (omega_r):  ',  opt_thrsh_str)
         print('Operator pool type:                      ',  'full')
         print('SPQE residual-norm threshold (Omega):    ',  spqe_thrsh_str)
         print('SPQE maxiter:                            ',  self._spqe_maxiter)
@@ -225,6 +249,7 @@ class SPQE(UCCPQE):
     def diis_solve(self):
         # draws heavy insiration from Daniel Smith's ccsd_diss.py code in psi4 numpy
         diis_dim = 0
+        diis_max_dim = self._diis_max_dim
         t_diis = [copy.deepcopy(self._tamps)]
         e_diis = []
         rk_norm = 1.0
@@ -239,7 +264,7 @@ class SPQE(UCCPQE):
             #do regular update
             r_k = self.get_residual_vector(self._tamps)
             rk_norm = np.linalg.norm(r_k)
-            r_k = self.get_res_over_mpdenom(r_k)
+            r_k = self.get_res_over_mpdenom(r_k, self._shift)
 
             self._tamps = list(np.add(self._tamps, r_k))
 
@@ -262,6 +287,11 @@ class SPQE(UCCPQE):
             e_diis.append(np.subtract(copy.deepcopy(self._tamps), t_old))
 
             if(k >= 1):
+
+                if len(t_diis) > diis_max_dim:
+                    del t_diis[0]
+                    del e_diis[0]
+
                 diis_dim = len(t_diis) - 1
 
                 #consturct diis B matrix (following Crawford Group github tutorial)
@@ -426,7 +456,7 @@ class SPQE(UCCPQE):
                 print('  SPQE converged with M_omega thresh!')
                 self._converged = True
                 self._final_energy = self._energies[-1]
-                self._final_result = self._results[-1]
+                #self._final_result = self._results[-1]
             else:
                 self._converged = False
 
@@ -441,7 +471,7 @@ class SPQE(UCCPQE):
                     if(self._verbose):
                         print(f"  {Nmu_tup[1]:10}                  {np.real(Nmu_tup[0]):14}")
                     if(Nmu_tup[1] not in self._tops):
-                        self._tops.insert(0,Nmu_tup[1])
+                        self._tops.insert(0,self._excitation_dictionary[Nmu_tup[1]])
                         self._tamps.insert(0,0.0)
                         self.add_from_basis_idx(Nmu_tup[1])
 
@@ -475,8 +505,8 @@ class SPQE(UCCPQE):
                             if(self._verbose):
                                 Ktemp = self.get_op_from_basis_idx(op_idx)
                                 print(f"  {op_idx:10}                  {np.real(rmu_sq)/(self._dt * self._dt):14.12f}   {Ktemp.str()}" )
-                            if op_idx not in self._tops:
-                                temp_ops.append(op_idx)
+                            if self._excitation_dictionary[op_idx] not in self._tops:
+                                temp_ops.append(self._excitation_dictionary[op_idx])
                                 self.add_from_basis_idx(op_idx)
 
                     for temp_op in temp_ops[::-1]:
@@ -637,7 +667,7 @@ class SPQE(UCCPQE):
         if abs(self._curr_res_sq_norm) < abs(self._spqe_thresh * self._spqe_thresh):
             self._converged = True
             self._final_energy = self._energies[-1]
-            self._final_result = self._results[-1]
+            #self._final_result = self._results[-1]
         else:
             self._converged = False
 

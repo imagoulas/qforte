@@ -50,6 +50,7 @@ class UCCNPQE(UCCPQE):
             pool_type='SD',
             opt_thresh = 1.0e-5,
             opt_maxiter = 40,
+            shift=0.0,
             noise_factor = 0.0):
 
         if(self._state_prep_type != 'occupation_list'):
@@ -58,6 +59,7 @@ class UCCNPQE(UCCPQE):
         self._pool_type = pool_type
         self._opt_thresh = opt_thresh
         self._opt_maxiter = opt_maxiter
+        self._shift = shift
         self._noise_factor = noise_factor
 
         self._tops = []
@@ -140,8 +142,9 @@ class UCCNPQE(UCCPQE):
             print('Measurement varience thresh:             ',  0.01)
 
         res_thrsh_str = '{:.2e}'.format(self._opt_thresh)
-        print('DIIS maxiter:                            ',  self._opt_maxiter)
-        print('DIIS res-norm threshold:                 ',  res_thrsh_str)
+        print('DIIS dimension:                          ', self._diis_max_dim)
+        print('Maximum number of iterations:            ',  self._opt_maxiter)
+        print('Residual-norm threshold:                 ',  res_thrsh_str)
 
         print('Operator pool type:                      ',  str(self._pool_type))
 

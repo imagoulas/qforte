@@ -56,25 +56,33 @@ class UCC:
 
         print('\nBuilding single particle energies list:')
         print('---------------------------------------', flush=True)
-        qc = qf.Computer(self._nqb)
-        qc.apply_circuit(build_Uprep(self._ref, 'occupation_list'))
-        E0 = qc.direct_op_exp_val(self._qb_ham)
 
-        for i in range(self._nqb):
+        ### WARNING: Assuming RHF orbital energies ###
+        if hasattr(self._sys, 'hf_orbital_energies'):
+            for i, j in enumerate(self._sys.hf_orbital_energies):
+                self._orb_e += [j]*2
+                print(f'  {2*i:3}     {j:+16.12f}', flush=True)
+                print(f'  {2*i+1:3}     {j:+16.12f}', flush=True)
+        else:
             qc = qf.Computer(self._nqb)
             qc.apply_circuit(build_Uprep(self._ref, 'occupation_list'))
-            qc.apply_gate(qf.gate('X', i, i))
-            Ei = qc.direct_op_exp_val(self._qb_ham)
+            E0 = qc.direct_op_exp_val(self._qb_ham)
 
-            if(i<sum(self._ref)):
-                ei = E0 - Ei
-            else:
-                ei = Ei - E0
+            for i in range(self._nqb):
+                qc = qf.Computer(self._nqb)
+                qc.apply_circuit(build_Uprep(self._ref, 'occupation_list'))
+                qc.apply_gate(qf.gate('X', i, i))
+                Ei = qc.direct_op_exp_val(self._qb_ham)
 
-            print(f'  {i:3}     {ei:+16.12f}', flush=True)
-            self._orb_e.append(ei)
+                if(i<sum(self._ref)):
+                    ei = E0 - Ei
+                else:
+                    ei = Ei - E0
 
-    def get_res_over_mpdenom(self, residuals):
+                print(f'  {i:3}     {ei:+16.12f}', flush=True)
+                self._orb_e.append(ei)
+
+    def get_res_over_mpdenom(self, residuals, shift=0.0):
         """This function returns a vector given by the residuals dividied by the
         respective Moller Plesset denominators.
 
@@ -101,7 +109,7 @@ class UCC:
 
             denom = sum(self._orb_e[x] for x in sq_annihilators) - sum(self._orb_e[x] for x in sq_creators)
 
-            res_mu = residuals[mu] / denom
+            res_mu = residuals[mu] / (denom + shift)
 
             resids_over_denoms.append(res_mu)
 

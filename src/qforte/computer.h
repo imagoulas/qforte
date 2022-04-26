@@ -24,6 +24,9 @@ class Computer {
     /// default constructor: create a quantum computer with nqubit qubits
     Computer(int nqubit);
 
+    /// constructor: create a quantum computer with constant particle number and Sz
+    Computer(int nqubit, int nalpha, int nbeta);
+
     /// applies a matrix representation of a Gate, Gircuit, or QubitOoperator
     /// to the quantum state.
     void apply_matrix(const std::vector<std::vector< std::complex<double> >>& Opmat);
@@ -142,6 +145,10 @@ class Computer {
   private:
     /// the number of qubits
     size_t nqubit_;
+    /// number of "occupied alpha" qubits
+    size_t nalpha_;
+    /// number of "occupied beta" qubits
+    size_t nbeta_;
     /// the number of basis states (2 ^ nqubit_)
     size_t nbasis_;
     /// the tensor product basis
@@ -157,7 +164,7 @@ class Computer {
     /// the number of two-qubit operations
     size_t ntwo_ops_ = 0;
     /// the threshold for priting a determinant
-    double print_threshold_ = 1.0e-14;
+    double print_threshold_ = 1.0e-10;
     /// the threshold for doing operations with elements of gate matricies
     double compute_threshold_ = 1.0e-16;
 

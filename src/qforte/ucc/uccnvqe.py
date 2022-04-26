@@ -42,6 +42,7 @@ class UCCNVQE(UCCVQE):
             opt_maxiter=200,
             pool_type='SD',
             optimizer='BFGS',
+            shift=0.0,
             use_analytic_grad = True,
             noise_factor = 0.0):
 
@@ -50,6 +51,7 @@ class UCCNVQE(UCCVQE):
         self._opt_maxiter = opt_maxiter
         self._use_analytic_grad = use_analytic_grad
         self._optimizer = optimizer
+        self._shift = shift
         self._pool_type = pool_type
         self._noise_factor = noise_factor
 

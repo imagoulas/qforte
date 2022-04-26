@@ -6,6 +6,7 @@
 
 #include "fmt/format.h"
 
+#include "bitwise_operations.h"
 #include "qubit_basis.h"
 #include "circuit.h"
 #include "gate.h"
@@ -33,6 +34,23 @@ Computer::Computer(int nqubit) : nqubit_(nqubit) {
         basis_[i] = QubitBasis(i);
     }
     coeff_[0] = 1.;
+}
+
+Computer::Computer(int nqubit, int nalpha, int nbeta) : nqubit_(nqubit), nalpha_(nalpha), nbeta_(nbeta) {
+    size_t fock_dim = 1 << nqubit;
+    size_t mask_alpha = 0x5555555555555555UL;
+    size_t mask_beta = mask_alpha << 1;
+    for (size_t i = 0; i < fock_dim; i++) {
+        size_t alphas = i & mask_alpha;
+        size_t betas = i & mask_beta;
+        if (ui64_bit_count(alphas) == nalpha_ and ui64_bit_count(betas) == nbeta_) {
+            basis_.push_back(QubitBasis(i));
+        }
+    }
+        nbasis_ = basis_.size();
+        coeff_.assign(nbasis_, 0.0);
+        new_coeff_.assign(nbasis_, 0.0);
+        coeff_[0] = 1.;
 }
 
 std::complex<double> Computer::coeff(const QubitBasis& basis) {
@@ -964,7 +982,7 @@ std::complex<double> Computer::direct_gate_exp_val(const Gate& qg) {
 std::vector<std::string> Computer::str() const {
     std::vector<std::string> terms;
     for (size_t i = 0; i < nbasis_; i++) {
-        if (std::abs(coeff_[i]) > print_threshold_) {
+        if (std::abs(coeff_[i]) >= print_threshold_) {
             terms.push_back(fmt::format("({:f} {:+f} i) {}", std::real(coeff_[i]),
                                         std::imag(coeff_[i]), basis_[i].str(nqubit_)));
         }

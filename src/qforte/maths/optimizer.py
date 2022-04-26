@@ -10,6 +10,7 @@ def diis_solve(self, residual):
     """
     # draws heavy inspiration from Daniel Smith's ccsd_diis.py code in psi4 numpy
     diis_dim = 0
+    diis_max_dim = self._diis_max_dim
     t_diis = [copy.deepcopy(self._tamps)]
     e_diis = []
     rk_norm = 1.0
@@ -32,7 +33,7 @@ def diis_solve(self, residual):
         r_k = residual(self._tamps)
         rk_norm = np.linalg.norm(r_k)
 
-        r_k = self.get_res_over_mpdenom(r_k)
+        r_k = self.get_res_over_mpdenom(r_k, self._shift)
         self._tamps = list(np.add(self._tamps, r_k))
 
         Ek = self.energy_feval(self._tamps)
@@ -54,6 +55,11 @@ def diis_solve(self, residual):
         e_diis.append(np.subtract(copy.deepcopy(self._tamps), t_old))
 
         if(k >= 1):
+
+            if len(t_diis) > diis_max_dim:
+                del t_diis[0]
+                del e_diis[0]
+
             diis_dim = len(t_diis) - 1
 
             # Construct diis B matrix (following Crawford Group github tutorial)

@@ -121,6 +121,7 @@ PYBIND11_MODULE(qforte, m) {
 
     py::class_<Computer>(m, "Computer")
         .def(py::init<size_t>(), "nqubits"_a, "Make a quantum computer with 'nqubits' qubits")
+        .def(py::init<size_t,size_t,size_t>(), "nqubits"_a, "nalpha"_a, "nbeta"_a, "Make a quantum computer with 'nqubits' qubits and constant particle number and Sz")
         .def("apply_circuit_safe", &Computer::apply_circuit_safe)
         .def("apply_matrix", &Computer::apply_matrix)
         .def("apply_sparse_matrix", &Computer::apply_sparse_matrix)
