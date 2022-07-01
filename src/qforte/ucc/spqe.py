@@ -222,7 +222,10 @@ class SPQE(UCCPQE):
 
         opt_thrsh_str = '{:.2e}'.format(self._opt_thresh)
         spqe_thrsh_str = '{:.2e}'.format(self._spqe_thresh)
-        print('DIIS dimension:                          ', self._diis_max_dim)
+        if self._diis_max_dim >=2:
+            print('DIIS dimension:                          ', self._diis_max_dim)
+        else:
+            print('DIIS dimension:                          Disabled')
         print('Number of micro-iterations:              ',  self._opt_maxiter)
         print('Micro-iteration residual-norm threshold (omega_r):  ',  opt_thrsh_str)
         print('Operator pool type:                      ',  'full')
@@ -286,7 +289,7 @@ class SPQE(UCCPQE):
             t_diis.append(copy.deepcopy(self._tamps))
             e_diis.append(np.subtract(copy.deepcopy(self._tamps), t_old))
 
-            if(k >= 1):
+            if(k >= 1 and diis_max_dim >= 2):
 
                 if len(t_diis) > diis_max_dim:
                     del t_diis[0]
@@ -504,7 +507,7 @@ class SPQE(UCCPQE):
                         if res_sq_sum > (self._spqe_thresh * self._spqe_thresh):
                             if(self._verbose):
                                 Ktemp = self.get_op_from_basis_idx(op_idx)
-                                print(f"  {op_idx:10}                  {np.real(rmu_sq)/(self._dt * self._dt):14.12f}   {Ktemp.str()}" )
+                                print(f"  {self._excitation_dictionary[op_idx]:10}                  {np.real(rmu_sq)/(self._dt * self._dt):14.12f}   {Ktemp.str()}" )
                             if self._excitation_dictionary[op_idx] not in self._tops:
                                 temp_ops.append(self._excitation_dictionary[op_idx])
                                 self.add_from_basis_idx(op_idx)
@@ -517,10 +520,10 @@ class SPQE(UCCPQE):
                     # Add the single operator with greatest rmu_sq not yet in the ansatz
                     res_sq.reverse()
                     for rmu_sq, op_idx in res_sq[1:]:
-                        print(f"  {op_idx:10}                  {np.real(rmu_sq)/(self._dt * self._dt):14.12f}")
-                        if op_idx not in self._tops:
+                        print(f"  {self._excitation_dictionary[op_idx]:10}                  {np.real(rmu_sq)/(self._dt * self._dt):14.12f}")
+                        if self._excitation_dictionary[op_idx] not in self._tops:
                             print('Adding this operator to ansatz')
-                            self._tops.insert(0, op_idx)
+                            self._tops.insert(0, self._excitation_dictionary[op_idx])
                             self._tamps.insert(0, 0.0)
                             self.add_from_basis_idx(op_idx)
                             break

@@ -54,7 +54,7 @@ def diis_solve(self, residual):
         t_diis.append(copy.deepcopy(self._tamps))
         e_diis.append(np.subtract(copy.deepcopy(self._tamps), t_old))
 
-        if(k >= 1):
+        if(k >= 1 and diis_max_dim >= 2):
 
             if len(t_diis) > diis_max_dim:
                 del t_diis[0]

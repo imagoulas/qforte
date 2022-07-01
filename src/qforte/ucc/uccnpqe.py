@@ -142,7 +142,10 @@ class UCCNPQE(UCCPQE):
             print('Measurement varience thresh:             ',  0.01)
 
         res_thrsh_str = '{:.2e}'.format(self._opt_thresh)
-        print('DIIS dimension:                          ', self._diis_max_dim)
+        if self._diis_max_dim >= 2:
+            print('DIIS dimension:                          ', self._diis_max_dim)
+        else:
+            print('DIIS dimension:                          Disabled')
         print('Maximum number of iterations:            ',  self._opt_maxiter)
         print('Residual-norm threshold:                 ',  res_thrsh_str)
 
