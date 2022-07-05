@@ -56,6 +56,7 @@ class SPQE(UCCPQE):
             opt_thresh = 1.0e-5,
             opt_maxiter = 30,
             shift = 0.0,
+            max_excit_rank = None,
             use_cumulative_thresh=True):
 
         if(self._state_prep_type != 'occupation_list'):
@@ -94,10 +95,7 @@ class SPQE(UCCPQE):
         self._n_pauli_trm_measures = 0
         self._n_pauli_trm_measures_lst = []
 
-        self.print_options_banner()
-
         self._Nm = []
-        self._pool_type = 'full'
         self._eiH, self._eiH_phase = trotterize(self._qb_ham, factor= self._dt*(0.0 + 1.0j), trotter_number=self._trotter_number)
 
         for occupation in self._ref:
@@ -105,10 +103,21 @@ class SPQE(UCCPQE):
                 self._nbody_counts.append(0)
 
         # create a pool of particle number, Sz, and spatial symmetry adapted second quantized operators
+        # of maximum excitation rank max_excit_rank
+        ref = sum([b << i for i, b in enumerate(self._ref)])
         mask_alpha = 0x5555555555555555
         mask_beta = mask_alpha << 1
         nalpha = sum(self._ref[0::2])
         nbeta = sum(self._ref[1::2])
+        if max_excit_rank is None:
+            max_excit_rank = nalpha + nbeta
+        elif not isinstance(max_excit_rank, int) or max_excit_rank < 0:
+            raise TypeError("The maximum excitation rank max_excit_rank must be a positive integer!")
+        elif max_excit_rank > nalpha + nbeta:
+            max_excit_rank = nalpha + nbeta
+            print("\nWARNING: The entered maximum excitation rank exceeds the number of particles.\n"
+                    "         Procceding with max_excit_rank = {0}.\n".format(max_excit_rank))
+        self._pool_type = max_excit_rank
         idx = -1
         self._excitation_dictionary = {}
         self._excitation_indices = []
@@ -123,10 +132,13 @@ class SPQE(UCCPQE):
                     if idx == -1:
                         idx += 1
                         continue
-                    self._pool_obj.add_term(0.0, self.get_op_from_basis_idx(I))
-                    self._excitation_dictionary[I] = idx
-                    self._excitation_indices.append(I)
-                    idx += 1
+                    if int(bin(ref ^ I).replace("0b", "").count('1')/2) <= self._pool_type:
+                        self._pool_obj.add_term(0.0, self.get_op_from_basis_idx(I))
+                        self._excitation_dictionary[I] = idx
+                        self._excitation_indices.append(I)
+                        idx += 1
+
+        self.print_options_banner()
 
         self.build_orb_energies()
         spqe_iter = 0
@@ -228,7 +240,8 @@ class SPQE(UCCPQE):
             print('DIIS dimension:                          Disabled')
         print('Number of micro-iterations:              ',  self._opt_maxiter)
         print('Micro-iteration residual-norm threshold (omega_r):  ',  opt_thrsh_str)
-        print('Operator pool type:                      ',  'full')
+        print('Maximum excitation rank in operator pool:',  self._pool_type)
+        print('Number of operators in pool:             ', len(self._pool_obj))
         print('SPQE residual-norm threshold (Omega):    ',  spqe_thrsh_str)
         print('SPQE maxiter:                            ',  self._spqe_maxiter)
 
@@ -237,7 +250,6 @@ class SPQE(UCCPQE):
         print('\n\n                ==> SPQE summary <==')
         print('-----------------------------------------------------------')
         print('Final SPQE Energy:                           ', round(self._Egs, 10))
-        print('Number of operators in pool:                 ', len(self._pool_obj))
         print('Final number of amplitudes in ansatz:        ', len(self._tamps))
         print('Number of classical parameters used:         ', self._n_classical_params)
         print('Number of CNOT gates in deepest circuit:     ', self._n_cnot)
@@ -481,9 +493,9 @@ class SPQE(UCCPQE):
                 self._n_classical_params_lst.append(len(self._tops))
 
         else: # when M_omega == 'inf', proceed with standard SPQE
-            res_sq = [( np.real(np.conj(res_coeffs[I]) * res_coeffs[I]), I) for I in range(len(res_coeffs))]
+            res_sq = [( np.real(np.conj(res_coeffs[I]) * res_coeffs[I]), I) for I in self._excitation_indices]
             res_sq.sort()
-            self._curr_res_sq_norm = sum(rmu_sq[0] for rmu_sq in res_sq[:-1]) / (self._dt * self._dt)
+            self._curr_res_sq_norm = sum(rmu_sq[0] for rmu_sq in res_sq) / (self._dt * self._dt)
 
             print('  \n--> Begin selection opt with residual magnitudes |r_mu|:')
             print('  Initial guess energy: ', round(init_gues_energy,10))
@@ -502,7 +514,7 @@ class SPQE(UCCPQE):
                     # Make a running list of operators. When the sum of res_sq exceeds the target, every operator
                     # from here out is getting added to the ansatz..
                     temp_ops = []
-                    for rmu_sq, op_idx in res_sq[:-1]:
+                    for rmu_sq, op_idx in res_sq:
                         res_sq_sum += rmu_sq / (self._dt * self._dt)
                         if res_sq_sum > (self._spqe_thresh * self._spqe_thresh):
                             if(self._verbose):
@@ -519,7 +531,7 @@ class SPQE(UCCPQE):
                 else:
                     # Add the single operator with greatest rmu_sq not yet in the ansatz
                     res_sq.reverse()
-                    for rmu_sq, op_idx in res_sq[1:]:
+                    for rmu_sq, op_idx in res_sq:
                         print(f"  {self._excitation_dictionary[op_idx]:10}                  {np.real(rmu_sq)/(self._dt * self._dt):14.12f}")
                         if self._excitation_dictionary[op_idx] not in self._tops:
                             print('Adding this operator to ansatz')
