@@ -14,6 +14,7 @@ from qforte.utils.trotterization import trotterize
 from qforte.utils.point_groups import sq_op_find_symmetry
 
 import numpy as np
+from itertools import combinations
 
 class SPQE(UCCPQE):
     """This class implements the selected projective quantum eigensolver (SPQE) for
@@ -57,6 +58,7 @@ class SPQE(UCCPQE):
             opt_maxiter = 30,
             shift = 0.0,
             max_excit_rank = None,
+            repeated_SD_pool=False,
             use_cumulative_thresh=True):
 
         if(self._state_prep_type != 'occupation_list'):
@@ -74,6 +76,7 @@ class SPQE(UCCPQE):
         self._opt_thresh = opt_thresh
         self._opt_maxiter = opt_maxiter
         self._shift = shift
+        self._repeated_SD_pool = repeated_SD_pool
 
         self._nbody_counts = []
         self._n_classical_params_lst = []
@@ -95,7 +98,6 @@ class SPQE(UCCPQE):
         self._n_pauli_trm_measures = 0
         self._n_pauli_trm_measures_lst = []
 
-        self._Nm = []
         self._eiH, self._eiH_phase = trotterize(self._qb_ham, factor= self._dt*(0.0 + 1.0j), trotter_number=self._trotter_number)
 
         for occupation in self._ref:
@@ -109,7 +111,7 @@ class SPQE(UCCPQE):
         mask_beta = mask_alpha << 1
         nalpha = sum(self._ref[0::2])
         nbeta = sum(self._ref[1::2])
-        if max_excit_rank is None:
+        if max_excit_rank is None or repeated_SD_pool:
             max_excit_rank = nalpha + nbeta
         elif not isinstance(max_excit_rank, int) or max_excit_rank < 0:
             raise TypeError("The maximum excitation rank max_excit_rank must be a positive integer!")
@@ -122,6 +124,8 @@ class SPQE(UCCPQE):
         self._excitation_dictionary = {}
         self._excitation_indices = []
         self._pool_obj = qf.SQOpPool()
+        if repeated_SD_pool:
+            self._aux_pool_obj = qf.SQOpPool()
         for I in range(1 << self._nqb):
             alphas = [int(j) for j in bin(I & mask_alpha)[2:]]
             betas = [int(j) for j in bin(I & mask_beta)[2:]]
@@ -132,8 +136,31 @@ class SPQE(UCCPQE):
                     if idx == -1:
                         idx += 1
                         continue
-                    if int(bin(ref ^ I).replace("0b", "").count('1')/2) <= self._pool_type:
-                        self._pool_obj.add_term(0.0, self.get_op_from_basis_idx(I))
+                    excit = bin(ref ^ I).replace("0b", "")
+                    if int(excit.count('1')/2) <= self._pool_type:
+                        occ_idx = [int(i) for i,j in enumerate(reversed(excit[-nalpha-nbeta:])) if int(j) == 1]
+                        unocc_idx = [int(i)+nalpha+nbeta for i,j in enumerate(reversed(excit[:-nalpha-nbeta])) if int(j) == 1]
+                        if repeated_SD_pool:
+                            sq_op = qf.SQOperator()
+                            sq_op.add(+1.0, unocc_idx, occ_idx)
+                            sq_op.add(-1.0, occ_idx[::-1], unocc_idx[::-1])
+                            sq_op.simplify()
+                            self._aux_pool_obj.add_term(0.0, sq_op)
+                            if len(occ_idx) > 2:
+                                distance = self._nqb - 1
+                                for occ_comb in combinations(occ_idx, 2):
+                                    for unocc_comb in combinations(unocc_idx, 2):
+                                        if len([i for i in occ_comb if i%2==0]) == len([i for i in unocc_comb if i%2==0]):
+                                            if qf.sq_op_find_symmetry(self._sys.orb_irreps_to_int, occ_comb, unocc_comb) == 0:
+                                                if max(unocc_comb) - min(occ_comb) <= distance:
+                                                    distance = max(unocc_comb) - min(occ_comb)
+                                                    occ_idx = list(occ_comb)
+                                                    unocc_idx = list(unocc_comb)
+                        sq_op = qf.SQOperator()
+                        sq_op.add(+1.0, unocc_idx, occ_idx)
+                        sq_op.add(-1.0, occ_idx[::-1], unocc_idx[::-1])
+                        sq_op.simplify()
+                        self._pool_obj.add_term(0.0, sq_op)
                         self._excitation_dictionary[I] = idx
                         self._excitation_indices.append(I)
                         idx += 1
@@ -243,6 +270,7 @@ class SPQE(UCCPQE):
         print('Number of micro-iterations:              ',  self._opt_maxiter)
         print('Micro-iteration residual-norm threshold (omega_r):  ',  opt_thrsh_str)
         print('Maximum excitation rank in operator pool:',  self._pool_type)
+        print('Use a repeated SD operator pool:         ', self._repeated_SD_pool)
         print('Number of operators in pool:             ', len(self._pool_obj))
         print('SPQE residual-norm threshold (Omega):    ',  spqe_thrsh_str)
         print('SPQE maxiter:                            ',  self._spqe_maxiter)
@@ -353,7 +381,10 @@ class SPQE(UCCPQE):
         residuals = []
 
         for m in self._tops:
-            sq_op = self._pool_obj[m][1]
+            if self._repeated_SD_pool:
+                sq_op = self._aux_pool_obj[m][1]
+            else:
+                sq_op = self._pool_obj[m][1]
             # occ => i,j,k,...
             # vir => a,b,c,...
             # sq_op is 1.0(a^ b^ i j) - 1.0(j^ i^ b a)
@@ -447,7 +478,7 @@ class SPQE(UCCPQE):
                     if(Nmu_tup[1] not in self._tops):
                         self._tops.insert(0,self._excitation_dictionary[Nmu_tup[1]])
                         self._tamps.insert(0,0.0)
-                        self.add_from_basis_idx(Nmu_tup[1])
+                        self._nbody_counts[len(self._pool_obj[self._excitation_dictionary[Nmu_tup[1]]][1].terms()[0][1]) - 1] += 1
 
                 self._n_classical_params_lst.append(len(self._tops))
 
@@ -477,11 +508,11 @@ class SPQE(UCCPQE):
                         res_sq_sum += rmu_sq / (self._dt * self._dt)
                         if res_sq_sum > (self._spqe_thresh * self._spqe_thresh):
                             if(self._verbose):
-                                Ktemp = self.get_op_from_basis_idx(op_idx)
-                                print(f"  {self._excitation_dictionary[op_idx]:10}                  {np.real(rmu_sq)/(self._dt * self._dt):14.12f}   {Ktemp.str()}" )
+                                print(f"  {self._excitation_dictionary[op_idx]:10}                  {np.real(rmu_sq)/(self._dt * self._dt):14.12f}"
+                                      f"   {self._pool_obj[self._excitation_dictionary[op_idx]][1].str()}" )
                             if self._excitation_dictionary[op_idx] not in self._tops:
                                 temp_ops.append(self._excitation_dictionary[op_idx])
-                                self.add_from_basis_idx(op_idx)
+                                self._nbody_counts[len(self._pool_obj[self._excitation_dictionary[op_idx]][1].terms()[0][1]) - 1] += 1
 
                     for temp_op in temp_ops[::-1]:
                         self._tops.insert(0, temp_op)
@@ -496,146 +527,10 @@ class SPQE(UCCPQE):
                             print('Adding this operator to ansatz')
                             self._tops.insert(0, self._excitation_dictionary[op_idx])
                             self._tamps.insert(0, 0.0)
-                            self.add_from_basis_idx(op_idx)
+                            self._nbody_counts[len(self._pool_obj[self._excitation_dictionary[op_idx]][1].terms()[0][1]) - 1] += 1
                             break
 
                 self._n_classical_params_lst.append(len(self._tops))
-
-    def add_from_basis_idx(self, I):
-
-        max_nbody = len(self._nbody_counts)
-        nqb = len(self._ref)
-        nel = int(sum(self._ref))
-
-        # TODO(Nick): incorparate more flexability into this
-        na_el = int(nel/2);
-        nb_el = int(nel/2);
-        basis_I = qf.QubitBasis(I)
-
-        nbody = 0
-        pn = 0
-        na_I = 0
-        nb_I = 0
-        holes = [] # i, j, k, ...
-        particles = [] # a, b, c, ...
-        parity = []
-
-        # for ( p=0; p<nel; p++) {
-        for p in range(nel):
-            bit_val = int(basis_I.get_bit(p))
-            nbody += (1 - bit_val)
-            pn += bit_val
-            if(p%2==0):
-                na_I += bit_val
-            else:
-                nb_I += bit_val
-
-            if(bit_val-1):
-                holes.append(p)
-                if(p%2==0):
-                    parity.append(1)
-                else:
-                    parity.append(-1)
-
-        for q in range(nel, nqb):
-            bit_val = int(basis_I.get_bit(q))
-            pn += bit_val
-            if(q%2==0):
-                na_I += bit_val
-            else:
-                nb_I += bit_val
-
-            if(bit_val):
-                particles.append(q)
-                if(q%2==0):
-                    parity.append(1)
-                else:
-                    parity.append(-1)
-
-        if(pn==nel and na_I == na_el and nb_I == nb_el):
-            if (nbody != 0 and nbody <= max_nbody ):
-
-                total_parity = 1
-                for z in parity:
-                    total_parity *= z
-
-                if(total_parity==1):
-                    K_temp = qf.SQOperator()
-                    K_temp.add(+1.0, particles, holes);
-                    K_temp.add(-1.0, holes[::-1], particles[::-1]);
-                    K_temp.simplify();
-                    # this is potentially slow
-                    self._Nm.insert(0, len(K_temp.jw_transform().terms()))
-                    self._nbody_counts[nbody-1] += 1
-
-    def get_op_from_basis_idx(self, I):
-
-        max_nbody = len(self._nbody_counts)
-        nqb = len(self._ref)
-        nel = int(sum(self._ref))
-
-        # TODO(Nick): incorparate more flexability into this
-        na_el = int(nel/2);
-        nb_el = int(nel/2);
-        basis_I = qf.QubitBasis(I)
-
-        nbody = 0
-        pn = 0
-        na_I = 0
-        nb_I = 0
-        holes = [] # i, j, k, ...
-        particles = [] # a, b, c, ...
-        parity = []
-
-        for p in range(nel):
-            bit_val = int(basis_I.get_bit(p))
-            nbody += (1 - bit_val)
-            pn += bit_val
-            if(p%2==0):
-                na_I += bit_val
-            else:
-                nb_I += bit_val
-
-            if(bit_val-1):
-                holes.append(p)
-                if(p%2==0):
-                    parity.append(1)
-                else:
-                    parity.append(-1)
-
-        for q in range(nel, nqb):
-            bit_val = int(basis_I.get_bit(q))
-            pn += bit_val
-            if(q%2==0):
-                na_I += bit_val
-            else:
-                nb_I += bit_val
-
-            if(bit_val):
-                particles.append(q)
-                if(q%2==0):
-                    parity.append(1)
-                else:
-                    parity.append(-1)
-
-        if(pn==nel and na_I == na_el and nb_I == nb_el):
-            if (nbody==0):
-                return qf.SQOperator()
-            if (nbody != 0 and nbody <= max_nbody ):
-
-                total_parity = 1
-                for z in parity:
-                    total_parity *= z
-
-                if(total_parity==1):
-                    K_temp = qf.SQOperator()
-                    K_temp.add(+1.0, particles, holes);
-                    K_temp.add(-1.0, holes[::-1], particles[::-1]);
-                    K_temp.simplify();
-
-                    return K_temp
-
-        return qf.SQOperator()
 
     def conv_status(self):
         if abs(self._curr_res_sq_norm) < abs(self._spqe_thresh * self._spqe_thresh):

@@ -97,7 +97,12 @@ class UCC:
 
         # loop over toperators
         for mu, m in enumerate(self._tops):
-            sq_op = self._pool_obj[m][1]
+            if hasattr(self, '_repeated_SD_pool'):
+                if self._repeated_SD_pool:
+                    sq_op = self._aux_pool_obj[m][1]
+                else: sq_op = self._pool_obj[m][1]
+            else:
+                sq_op = self._pool_obj[m][1]
 
             temp_idx = sq_op.terms()[0][2][-1]
             if temp_idx < int(sum(self._ref)/2): # if temp_idx is an occupied idx
