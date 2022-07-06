@@ -138,6 +138,8 @@ class SPQE(UCCPQE):
                         self._excitation_indices.append(I)
                         idx += 1
 
+        self._reversed_excitation_dictionary = {value: key for key, value in self._excitation_dictionary.items()}
+
         self.print_options_banner()
 
         self.build_orb_energies()
@@ -350,65 +352,22 @@ class SPQE(UCCPQE):
         coeffs = qc_res.get_coeff_vec()
         residuals = []
 
-        # each operator needs a score, so loop over toperators
         for m in self._tops:
             sq_op = self._pool_obj[m][1]
             # occ => i,j,k,...
             # vir => a,b,c,...
             # sq_op is 1.0(a^ b^ i j) - 1.0(j^ i^ b a)
-            temp_idx = sq_op.terms()[0][2][-1]
-            if temp_idx < int(sum(self._ref)/2): # if temp_idx is an occupied idx
-                sq_creators = sq_op.terms()[0][1]
-                sq_annihilators = sq_op.terms()[0][2]
-            else:
-                sq_creators = sq_op.terms()[0][2]
-                sq_annihilators = sq_op.terms()[0][1]
 
-            destroyed = False
-            denom = 1.0
+            qc_temp = qforte.Computer(self._nqb)
+            qc_temp.apply_circuit(self._Uprep)
+            qc_temp.apply_operator(sq_op.jw_transform(self._qubit_excitations))
+            sign_adjust = qc_temp.get_coeff_vec()[self._reversed_excitation_dictionary[m]]
 
-            basis_I = qforte.QubitBasis(self._nqb)
-            for k, occ in enumerate(self._ref):
-                basis_I.set_bit(k, occ)
+            res_m = coeffs[self._reversed_excitation_dictionary[m]] * sign_adjust
+            if(np.imag(res_m) > 0.0):
+                raise ValueError("residual has imaginary component, someting went wrong!!")
 
-            # loop over anihilators
-            for p in reversed(sq_annihilators):
-                if( basis_I.get_bit(p) == 0):
-                    destroyed=True
-                    break
-
-                basis_I.set_bit(p, 0)
-
-            # then over creators
-            for p in reversed(sq_creators):
-                if (basis_I.get_bit(p) == 1):
-                    destroyed=True
-                    break
-
-                basis_I.set_bit(p, 1)
-
-            if not destroyed:
-
-                I = basis_I.add()
-
-                ## check for correct dets
-                det_I = integer_to_ref(I, self._nqb)
-                nel_I = sum(det_I)
-                cor_spin_I = correct_spin(det_I, 0)
-
-                qc_temp = qforte.Computer(self._nqb)
-                qc_temp.apply_circuit(self._Uprep)
-                qc_temp.apply_operator(sq_op.jw_transform(self._qubit_excitations))
-                sign_adjust = qc_temp.get_coeff_vec()[I]
-
-                res_m = coeffs[I] * sign_adjust
-                if(np.imag(res_m) > 0.0):
-                    raise ValueError("residual has imaginary component, someting went wrong!!")
-
-                residuals.append(res_m)
-
-            else:
-                raise ValueError("no ops should destroy reference, something went wrong!!")
+            residuals.append(res_m)
 
         return residuals
 
