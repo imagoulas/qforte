@@ -83,7 +83,9 @@ class ADAPTVQE(UCCVQE):
             optimizer='BFGS',
             use_analytic_grad = True,
             use_cumulative_thresh = False,
-            add_equiv_ops = False):
+            add_equiv_ops = False,
+            adapt_local = False,
+            max_distance = None):
 
         self._avqe_thresh = avqe_thresh
         self._opt_thresh = opt_thresh
@@ -94,6 +96,11 @@ class ADAPTVQE(UCCVQE):
         self._pool_type = pool_type
         self._use_cumulative_thresh = use_cumulative_thresh
         self._add_equiv_ops = add_equiv_ops
+        self._adapt_local = adapt_local
+        self._max_distance = max_distance
+
+        if max_distance is None:
+            self._max_distance = self._nqb - 1
 
         self._results = []
         self._energies = []
@@ -236,6 +243,8 @@ class ADAPTVQE(UCCVQE):
         # Specific ADAPT-VQE options.
         print('ADAPT-VQE grad-norm threshold (eps):     ',  avqe_thrsh_str)
         print('ADAPT-VQE maxiter:                       ',  self._adapt_maxiter)
+        print('Use local ADAPT-VQE:                     ', self._adapt_local)
+        print('ADAPT-VQE maximum allowed qubit distance:', self._max_distance)
 
 
     def print_summary_banner(self):
@@ -319,14 +328,23 @@ class ADAPTVQE(UCCVQE):
 
         curr_norm = 0.0
         lgrst_grad = 0.0
+        lrgst_grad_qubit_distance = 0.0
+        sum_abs_grads = 1.0
+        sum_square_qubit_distances = 1.0
         Uvqc = self.build_Uvqc()
 
         if self._verbose:
             print('     op index (m)     N pauli terms              Gradient            Tmu  ')
             print('  ------------------------------------------------------------------------------')
 
-        grads = self.measure_gradient3()
+        grads, qubit_distances = self.measure_gradient3(self._adapt_local, self._max_distance)
 
+        if self._adapt_local:
+            sum_abs_grads = np.sum(np.absolute(grads))
+            sum_square_qubit_distances = np.sum(np.square(qubit_distances))
+
+        print()
+        print('######### ILIAS ##########')
         for m, grad_m in enumerate(grads):
             # refers to number of times sigma_y must be measured in "strategies for UCC" grad eval circuit
             self._n_pauli_measures_k += self._Nl * self._Nm[m]
@@ -335,14 +353,33 @@ class ADAPTVQE(UCCVQE):
             if (self._verbose):
                 print(f'       {m:3}                {self._Nm[m]:8}             {grad_m:+12.9f}      {self._pool_obj[m][1].terms()[0][1]}')
 
-            if (abs(grad_m) > abs(lgrst_grad)):
+            print(m, abs(grad_m), qubit_distances[m])
 
-                if(abs(lgrst_grad) > 0.0):
-                    secnd_lgst_grad = lgrst_grad
-                    secnd_lgrst_grad_idx = lgrst_grad_idx
+            if m == 0:
 
-                lgrst_grad = grad_m
-                lgrst_grad_idx = m
+                if (abs(grad_m) > abs(lgrst_grad)):
+
+                    if(abs(lgrst_grad) > 0.0):
+                        secnd_lgst_grad = lgrst_grad
+                        secnd_lgrst_grad_idx = lgrst_grad_idx
+
+                    lgrst_grad = grad_m
+                    lgrst_grad_idx = m
+                    lrgst_grad_qubit_distance = qubit_distances[m]
+            else:
+                if (abs(grad_m)/sum_abs_grads - (qubit_distances[m]**2)/sum_square_qubit_distances >
+                        abs(lgrst_grad)/sum_abs_grads - (lrgst_grad_qubit_distance**2)/sum_square_qubit_distances):
+
+                    if(abs(lgrst_grad) > 0.0):
+                        secnd_lgst_grad = lgrst_grad
+                        secnd_lgrst_grad_idx = lgrst_grad_idx
+
+                    lgrst_grad = grad_m
+                    lgrst_grad_idx = m
+                    lrgst_grad_qubit_distance = qubit_distances[m]
+
+        print('######### ILIAS ##########')
+        print()
 
         curr_norm = np.sqrt(curr_norm)
         print("\n==> Measuring gradients from pool:")

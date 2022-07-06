@@ -189,11 +189,33 @@ class UCCVQE(VQE, UCC):
 
         return grads
 
-    def measure_gradient3(self):
+    def measure_gradient3(self, adapt_local, max_distance):
         """ Calculates 2 Re <Psi|H K_mu |Psi> for all K_mu in self._pool_obj.
         For antihermitian K_mu, this is equal to <Psi|[H, K_mu]|Psi>.
         In ADAPT-VQE, this is the 'residual gradient' used to determine
         whether to append exp(t_mu K_mu) to the iterative ansatz.
+
+        Parameters
+        ----------
+        adapt_local: boolean
+            Switches on/off the use of qubit index distances as penalties for the gradients.
+            For example, given the a^p a^q a_r a_s second quantized operator, the penalty is
+            computed as max(|p -r|, |p - s|, |q - r|, |q - s|).
+
+        max_distance: int
+            Sets the maximum allowed qubit distance for a second quantized operator in the
+            pool to be considered when updating the ADAPT-VQE ansatz.
+            The default corresponds to allowing all second quantized operators.
+
+        Returns
+        -------
+        grads: numpy array of type float
+            Array containing the gradients corresponding to each second quantized operator in
+            the pool.
+
+        qubit_distances: numpy array of type ulonglong
+            Array containing the qubit distances, as defined in adapt_local, for each second
+            quantized operator in the pool.
         """
 
         if not self._fast:
@@ -210,8 +232,21 @@ class UCCVQE(VQE, UCC):
         qc_sig.apply_operator(self._qb_ham)
 
         grads = np.zeros(len(self._pool_obj))
+        qubit_distances = np.zeros(len(self._pool_obj), dtype=np.ulonglong)
 
         for mu, (coeff, operator) in enumerate(self._pool_obj):
+            if adapt_local or max_distance < self._nqb - 1:
+                create = operator.terms()[0][1]
+                annihilate = operator.terms()[0][2]
+                distance = 0
+                for p in create:
+                    for q in annihilate:
+                        if  distance < abs(p - q):
+                            distance = abs(p - q)
+                if adapt_local:
+                    qubit_distances[mu] = distance
+                if max_distance < self._nqb - 1 and distance > max_distance:
+                    continue
             Kmu = operator.jw_transform()
             Kmu.mult_coeffs(coeff)
             qc_psi.apply_operator(Kmu)
@@ -220,7 +255,7 @@ class UCCVQE(VQE, UCC):
 
         np.testing.assert_allclose(np.imag(grads), np.zeros_like(grads), atol=1e-7)
 
-        return grads
+        return grads, qubit_distances
 
     def gradient_ary_feval(self, params):
         grads = self.measure_gradient(params)
