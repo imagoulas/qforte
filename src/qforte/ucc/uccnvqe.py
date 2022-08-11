@@ -178,15 +178,15 @@ class UCCNVQE(UCCVQE):
         opts['maxiter'] = self._opt_maxiter
 
         # Optimizer-specific options
-        if self._optimizer in ['BFGS', 'CG', 'L-BFGS-B', 'TNC', 'trust-constr']:
+        if self._optimizer.lower() in ['bfgs', 'cg', 'l-bfgs-b', 'tnc', 'trust-constr']:
             opts['gtol'] = self._opt_thresh
-        if self._optimizer == 'Nelder-Mead':
+        if self._optimizer.lower() == 'nelder-mead':
             opts['fatol'] = self._opt_ftol
-        if self._optimizer in ['Powell', 'L-BFGS-B', 'TNC', 'SLSQP']:
+        if self._optimizer.lower() in ['powell', 'l-bfgs-b', 'tnc', 'slsqp']:
             opts['ftol'] = self._opt_ftol
-        if self._optimizer == 'COBYLA':
+        if self._optimizer.lower() == 'cobyla':
             opts['tol'] = self._opt_ftol
-        if self._optimizer in ['L-BFGS-B', 'TNC']:
+        if self._optimizer.lower() in ['l-bfgs-b', 'tnc']:
             opts['maxfun']  = self._opt_maxiter
 
         x0 = copy.deepcopy(self._tamps)
@@ -230,9 +230,7 @@ class UCCNVQE(UCCVQE):
             print('  => WARNING: minimization result may not be tightly converged.')
         print(f'  => Minimum Energy: {res.fun:+12.10f}')
         self._Egs = res.fun
-        if(self._optimizer == 'POWELL'):
-            print(type(res.fun))
-            print(res.fun)
+        if(self._optimizer.lower() == 'powell'):
             self._Egs = res.fun[()]
         self._final_result = res
         self._tamps = list(res.x)

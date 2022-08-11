@@ -15,6 +15,7 @@ from qforte.utils.point_groups import sq_op_find_symmetry
 
 import numpy as np
 from itertools import combinations
+from scipy.optimize import minimize
 
 class SPQE(UCCPQE):
     """This class implements the selected projective quantum eigensolver (SPQE) for
@@ -59,6 +60,7 @@ class SPQE(UCCPQE):
             shift = 0.0,
             max_excit_rank = None,
             repeated_SD_pool=False,
+            optimizer='DIIS',
             use_cumulative_thresh=True):
 
         if(self._state_prep_type != 'occupation_list'):
@@ -73,6 +75,7 @@ class SPQE(UCCPQE):
             self._M_omega = M_omega
 
         self._use_cumulative_thresh = use_cumulative_thresh
+        self._optimizer = optimizer
         self._opt_thresh = opt_thresh
         self._opt_maxiter = opt_maxiter
         self._shift = shift
@@ -113,7 +116,7 @@ class SPQE(UCCPQE):
         nbeta = sum(self._ref[1::2])
         if max_excit_rank is None or repeated_SD_pool:
             max_excit_rank = nalpha + nbeta
-        elif not isinstance(max_excit_rank, int) or max_excit_rank < 0:
+        elif not isinstance(max_excit_rank, int) or max_excit_rank <= 0:
             raise TypeError("The maximum excitation rank max_excit_rank must be a positive integer!")
         elif max_excit_rank > nalpha + nbeta:
             max_excit_rank = nalpha + nbeta
@@ -121,10 +124,15 @@ class SPQE(UCCPQE):
                     "         Procceding with max_excit_rank = {0}.\n".format(max_excit_rank))
         self._pool_type = max_excit_rank
         idx = -1
+        # determinant id : excitation operator index
         self._excitation_dictionary = {}
+        # list that holds the ids of determinants corresponding to operators in the pool
         self._excitation_indices = []
         self._pool_obj = qf.SQOpPool()
         if repeated_SD_pool:
+            # the auxiliary operator pool contains the operators that generate the determinants
+            # that span the N-electron Hilbert space; it is needed to obtain the correct signs
+            # of the residuals
             self._aux_pool_obj = qf.SQOpPool()
         for I in range(1 << self._nqb):
             alphas = [int(j) for j in bin(I & mask_alpha)[2:]]
@@ -134,6 +142,8 @@ class SPQE(UCCPQE):
                                        [len(alphas) - i - 1 for i, x in enumerate(alphas) if x],
                                        [len(betas) -i - 1 for i, x in enumerate(betas) if x]) == 0:
                     if idx == -1:
+                        # Currently, the first determinant satisfying the required symmetry criteria is the
+                        # HF determinant and is, thus, discarded
                         idx += 1
                         continue
                     excit = bin(ref ^ I).replace("0b", "")
@@ -147,6 +157,8 @@ class SPQE(UCCPQE):
                             sq_op.simplify()
                             self._aux_pool_obj.add_term(0.0, sq_op)
                             if len(occ_idx) > 2:
+                                # find the double excitation that obeys the symmetry criteria and whose quantum circuit
+                                # requires the smallest number of CNOT gates
                                 distance = self._nqb - 1
                                 for occ_comb in combinations(occ_idx, 2):
                                     for unocc_comb in combinations(unocc_idx, 2):
@@ -165,6 +177,7 @@ class SPQE(UCCPQE):
                         self._excitation_indices.append(I)
                         idx += 1
 
+        # excitation operator index : determinant id
         self._reversed_excitation_dictionary = {value: key for key, value in self._excitation_dictionary.items()}
 
         self.print_options_banner()
@@ -263,6 +276,7 @@ class SPQE(UCCPQE):
 
         opt_thrsh_str = '{:.2e}'.format(self._opt_thresh)
         spqe_thrsh_str = '{:.2e}'.format(self._spqe_thresh)
+        print('Optimizer:                               ', self._optimizer)
         if self._diis_max_dim >=2:
             print('DIIS dimension:                          ', self._diis_max_dim)
         else:
@@ -288,7 +302,12 @@ class SPQE(UCCPQE):
         print('Number of individual residual evaluations:   ', self._res_m_evals)
 
     def solve(self):
-        self.diis_solve()
+        if self._optimizer.lower() == 'diis':
+            self.diis_solve()
+        elif self._optimizer.lower() in ['nelder-mead', 'powell', 'cobyla', 'bfgs']:
+            self.scipy_solve()
+        else:
+           raise NotImplementedError('Currently only DIIS, Nelder-Mead, and Powell solvers are implemented')
 
 
     def diis_solve(self):
@@ -297,7 +316,6 @@ class SPQE(UCCPQE):
         diis_max_dim = self._diis_max_dim
         t_diis = [copy.deepcopy(self._tamps)]
         e_diis = []
-        rk_norm = 1.0
         Ek0 = self.energy_feval(self._tamps)
 
         print('\n    k iteration         Energy               dE           Nrvec ev      Nrm ev*         ||r||')
@@ -308,7 +326,6 @@ class SPQE(UCCPQE):
 
             #do regular update
             r_k = self.get_residual_vector(self._tamps)
-            rk_norm = np.linalg.norm(r_k)
             r_k = self.get_res_over_mpdenom(r_k, self._shift)
 
             self._tamps = list(np.add(self._tamps, r_k))
@@ -316,13 +333,10 @@ class SPQE(UCCPQE):
             Ek = self.energy_feval(self._tamps)
             dE = Ek - Ek0
             Ek0 = Ek
-            # self._num_res_evals += 1
-            self._res_vec_evals += 1
-            self._res_m_evals += len(self._tamps)
 
-            print(f'     {k:7}        {Ek:+12.10f}      {dE:+12.10f}      {self._res_vec_evals:4}        {self._res_m_evals:6}       {rk_norm:+12.10f}')
+            print(f'     {k:7}        {Ek:+12.10f}      {dE:+12.10f}      {self._res_vec_evals:4}        {self._res_m_evals:6}       {self._res_vec_norm:+12.10f}')
 
-            if(rk_norm < self._opt_thresh):
+            if(self._res_vec_norm < self._opt_thresh):
                 self._results.append('Fake result string')
                 self._final_result = 'nothing'
                 self._Egs = Ek
@@ -367,6 +381,41 @@ class SPQE(UCCPQE):
         self._n_pauli_trm_measures_lst.append(self._n_pauli_measures_k)
         self._n_cnot_lst.append(self.build_Uvqc().get_num_cnots())
 
+    def scipy_solve(self):
+
+        # Construct arguments to hand to the minimizer.
+        opts = {}
+
+        # Options common to all minimization algorithms
+        opts['disp'] = True
+        opts['maxiter'] = self._opt_maxiter
+
+        # Optimizer-specific options
+        if self._optimizer.lower() == 'nelder-mead':
+            opts['fatol'] = self._opt_thresh
+        if self._optimizer.lower() in ['powell']:
+            opts['ftol'] = self._opt_thresh
+
+        x0 = copy.deepcopy(self._tamps)
+        self._prev_energy = self.energy_feval(x0)
+        self._k_counter = 0
+
+        res = minimize(self.get_sum_residual_square, x0,
+                method=self._optimizer,
+                options=opts,
+                callback=self.report_iteration)
+
+        if(res.success):
+            print('  => Minimization successful!')
+        else:
+            print('  => WARNING: minimization result may not be tightly converged.')
+
+        self._tamps = list(res.x)
+        self._Egs = self.energy_feval(self._tamps)
+        self._energies.append(self._Egs)
+        self._n_pauli_measures_k += self._Nl*self._k_counter * (2*len(self._tamps) + 1)
+        self._n_pauli_trm_measures_lst.append(self._n_pauli_measures_k)
+        self._n_cnot_lst.append(self.build_Uvqc().get_num_cnots())
 
     def get_residual_vector(self, trial_amps):
         U = self.ansatz_circuit(trial_amps)
@@ -381,26 +430,40 @@ class SPQE(UCCPQE):
         residuals = []
 
         for m in self._tops:
-            if self._repeated_SD_pool:
-                sq_op = self._aux_pool_obj[m][1]
+
+            if self._optimizer.lower() == 'diis':
+                if self._repeated_SD_pool:
+                    sq_op = self._aux_pool_obj[m][1]
+                else:
+                    sq_op = self._pool_obj[m][1]
+                # occ => i,j,k,...
+                # vir => a,b,c,...
+                # sq_op is 1.0(a^ b^ i j) - 1.0(j^ i^ b a)
+
+                qc_temp = qforte.Computer(self._nqb)
+                qc_temp.apply_circuit(self._Uprep)
+                qc_temp.apply_operator(sq_op.jw_transform(self._qubit_excitations))
+                sign_adjust = qc_temp.get_coeff_vec()[self._reversed_excitation_dictionary[m]]
+
+                res_m = coeffs[self._reversed_excitation_dictionary[m]] * sign_adjust
+                if(np.imag(res_m) > 0.0):
+                    raise ValueError("residual has imaginary component, someting went wrong!!")
+                residuals.append(res_m.real)
             else:
-                sq_op = self._pool_obj[m][1]
-            # occ => i,j,k,...
-            # vir => a,b,c,...
-            # sq_op is 1.0(a^ b^ i j) - 1.0(j^ i^ b a)
+                residuals.append(coeffs[self._reversed_excitation_dictionary[m]].real)
 
-            qc_temp = qforte.Computer(self._nqb)
-            qc_temp.apply_circuit(self._Uprep)
-            qc_temp.apply_operator(sq_op.jw_transform(self._qubit_excitations))
-            sign_adjust = qc_temp.get_coeff_vec()[self._reversed_excitation_dictionary[m]]
 
-            res_m = coeffs[self._reversed_excitation_dictionary[m]] * sign_adjust
-            if(np.imag(res_m) > 0.0):
-                raise ValueError("residual has imaginary component, someting went wrong!!")
-
-            residuals.append(res_m)
+        self._res_vec_norm = np.linalg.norm(residuals)
+        self._res_vec_evals += 1
+        self._res_m_evals += len(trial_amps)
 
         return residuals
+
+    def get_sum_residual_square(self, tamps):
+        residual_vector = self.get_residual_vector(tamps)
+        sum_residual_vector_square = np.sum(np.square(residual_vector))
+        return sum_residual_vector_square
+
 
     def update_ansatz(self):
         self._n_pauli_measures_k = 0
