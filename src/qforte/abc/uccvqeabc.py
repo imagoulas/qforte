@@ -248,6 +248,9 @@ class UCCVQE(VQE, UCC):
         self._k_counter += 1
 
         if(self._k_counter == 1):
+            self._t_diis = [copy.deepcopy(self._tamps)]
+            self._e_diis = []
+
             print('\n    k iteration         Energy               dE           Ngvec ev      Ngm ev*         ||g||')
             print('--------------------------------------------------------------------------------------------------')
             if (self._print_summary_file):
@@ -266,6 +269,12 @@ class UCCVQE(VQE, UCC):
             f.close()
 
         self._prev_energy = self._curr_energy
+
+        self._t_diis.append(copy.deepcopy(x))
+        self._e_diis.append(np.subtract(self._t_diis[self._k_counter], self._t_diis[self._k_counter-1]))
+
+        #if(k >= 1 and self._diis_max_dim >= 2):
+            #self._tamps = diis(self._diis_max_dim, t_diis, e_diis)
 
     def verify_required_UCCVQE_attributes(self):
         if self._use_analytic_grad is None:

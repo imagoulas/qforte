@@ -9,7 +9,7 @@ import qforte
 from qforte.abc.uccvqeabc import UCCVQE
 
 from qforte.experiment import *
-from qforte.maths import optimizer
+from qforte.maths.optimizer import diis
 from qforte.utils.transforms import *
 from qforte.utils.state_prep import *
 from qforte.utils.trotterization import trotterize
@@ -44,8 +44,10 @@ class UCCNVQE(UCCVQE):
             optimizer='BFGS',
             shift=0.0,
             use_analytic_grad = True,
-            noise_factor = 0.0):
+            noise_factor = 0.0,
+            stupid = False):
 
+        self._stupid = stupid
         self._opt_thresh = opt_thresh
         self._opt_ftol = opt_ftol
         self._opt_maxiter = opt_maxiter
@@ -163,80 +165,168 @@ class UCCNVQE(UCCVQE):
         print('Number of individual grad evaluations:       ', self._res_m_evals)
 
     def solve(self):
-        if self._optimizer.lower() == "diis_solve":
-            self.build_orb_energies()
-            return self.diis_solve(self.gradient_ary_feval)
-        else:
             return self.scipy_solve()
 
     def scipy_solve(self):
-        # Construct arguments to hand to the minimizer.
-        opts = {}
+        if not self._stupid:
+            # Construct arguments to hand to the minimizer.
+            opts = {}
 
-        # Options common to all minimization algorithms
-        opts['disp'] = True
-        opts['maxiter'] = self._opt_maxiter
+            # Options common to all minimization algorithms
+            opts['disp'] = True
+            opts['maxiter'] = self._opt_maxiter
 
-        # Optimizer-specific options
-        if self._optimizer.lower() in ['bfgs', 'cg', 'l-bfgs-b', 'tnc', 'trust-constr']:
-            opts['gtol'] = self._opt_thresh
-        if self._optimizer.lower() == 'nelder-mead':
-            opts['fatol'] = self._opt_ftol
-        if self._optimizer.lower() in ['powell', 'l-bfgs-b', 'tnc', 'slsqp']:
-            opts['ftol'] = self._opt_ftol
-        if self._optimizer.lower() == 'cobyla':
-            opts['tol'] = self._opt_ftol
-        if self._optimizer.lower() in ['l-bfgs-b', 'tnc']:
-            opts['maxfun']  = self._opt_maxiter
+            # Optimizer-specific options
+            if self._optimizer.lower() in ['bfgs', 'cg', 'l-bfgs-b', 'tnc', 'trust-constr']:
+                opts['gtol'] = self._opt_thresh
+            if self._optimizer.lower() == 'nelder-mead':
+                opts['fatol'] = self._opt_ftol
+            if self._optimizer.lower() in ['powell', 'l-bfgs-b', 'tnc', 'slsqp']:
+                opts['ftol'] = self._opt_ftol
+            if self._optimizer.lower() in ['l-bfgs-b', 'tnc']:
+                opts['maxfun']  = self._opt_maxiter
 
-        x0 = copy.deepcopy(self._tamps)
-        init_gues_energy = self.energy_feval(x0)
-        self._prev_energy = init_gues_energy
+            x0 = copy.deepcopy(self._tamps)
+            init_gues_energy = self.energy_feval(x0)
+            self._prev_energy = init_gues_energy
 
-        if self._use_analytic_grad:
+            if self._use_analytic_grad:
+                print('  \n--> Begin opt with analytic gradient:')
+                print(f" Initial guess energy:              {init_gues_energy:+12.10f}")
+                res =  minimize(self.energy_feval, x0,
+                                        method=self._optimizer,
+                                        jac=self.gradient_ary_feval,
+                                        tol=self._opt_thresh,
+                                        options=opts,
+                                        callback=self.report_iteration)
+
+                # account for paulit term measurement for gradient evaluations
+                # for m in range(len(self._tamps)):
+                #     self._n_pauli_trm_measures += self._Nm[m] * self._Nl * res.njev
+
+                if hasattr(res, 'njev'):
+                    for tmu in res.x:
+                        if(np.abs(tmu) > 1.0e-12):
+                            self._n_pauli_trm_measures += int(2 * self._Nl * res.njev)
+
+                self._n_pauli_trm_measures += int(self._Nl * res.nfev)
+
+
+            else:
+                print('  \n--> Begin opt with grad estimated using first-differences:')
+                print(f" Initial guess energy:              {init_gues_energy:+12.10f}")
+                res =  minimize(self.energy_feval, x0,
+                                        method=self._optimizer,
+                                        tol=self._opt_thresh,
+                                        options=opts,
+                                        callback=self.report_iteration)
+
+                # account for pauli term measurement for energy evaluations
+                self._n_pauli_trm_measures += self._Nl * res.nfev
+
+            if(res.success):
+                print('  => Minimization successful!')
+            else:
+                print('  => WARNING: minimization result may not be tightly converged.')
+            print(f'  => Minimum Energy: {res.fun:+12.10f}')
+            self._Egs = res.fun
+            if(self._optimizer.lower() == 'powell'):
+                self._Egs = res.fun[()]
+            self._final_result = res
+            self._tamps = list(res.x)
+
+            self._n_classical_params = len(self._tamps)
+            self._n_cnot = self.build_Uvqc().get_num_cnots()
+
+        else:
+            # Construct arguments to hand to the minimizer.
+            opts = {}
+
+            # Options common to all minimization algorithms
+            opts['disp'] = False
+            opts['maxiter'] = 1
+
+            # Optimizer-specific options
+            if self._optimizer.lower() in ['bfgs', 'cg', 'l-bfgs-b', 'tnc', 'trust-constr']:
+                opts['gtol'] = self._opt_thresh
+            if self._optimizer.lower() == 'nelder-mead':
+                opts['fatol'] = self._opt_ftol
+            if self._optimizer.lower() in ['powell', 'l-bfgs-b', 'tnc', 'slsqp']:
+                opts['ftol'] = self._opt_ftol
+            if self._optimizer.lower() in ['l-bfgs-b', 'tnc']:
+                opts['maxfun']  = self._opt_maxiter
+
+            self._t_diis = [copy.deepcopy(self._tamps)]
+            self._e_diis = []
+
             print('  \n--> Begin opt with analytic gradient:')
-            print(f" Initial guess energy:              {init_gues_energy:+12.10f}")
-            res =  minimize(self.energy_feval, x0,
-                                    method=self._optimizer,
-                                    jac=self.gradient_ary_feval,
-                                    options=opts,
-                                    callback=self.report_iteration)
+            print(f" Initial guess energy:              {self.energy_feval(self._tamps):+12.10f}")
 
-            # account for paulit term measurement for gradient evaluations
-            # for m in range(len(self._tamps)):
-            #     self._n_pauli_trm_measures += self._Nm[m] * self._Nl * res.njev
+            for k in range(1, self._opt_maxiter+1):
+                x0 = copy.deepcopy(self._tamps)
+                self._prev_energy = self.energy_feval(x0)
 
-            for tmu in res.x:
-                if(np.abs(tmu) > 1.0e-12):
-                    self._n_pauli_trm_measures += int(2 * self._Nl * res.njev)
+                res =  minimize(self.energy_feval, x0,
+                                        method=self._optimizer,
+                                        jac=self.gradient_ary_feval,
+                                        tol=self._opt_thresh,
+                                        options=opts)
+
+                if(k == 1):
+
+                    print('\n    k iteration         Energy               dE           Ngvec ev      Ngm ev*         ||g||')
+                    print('--------------------------------------------------------------------------------------------------')
+                    if (self._print_summary_file):
+                        f = open("summary.dat", "w+", buffering=1)
+                        f.write('\n#    k iteration         Energy               dE           Ngvec ev      Ngm ev*         ||g||')
+                        f.write('\n#--------------------------------------------------------------------------------------------------')
+                        f.close()
+
+                # else:
+                dE = self._curr_energy - self._prev_energy
+                print(f'     {k:7}        {self._curr_energy:+12.10f}      {dE:+12.10f}      {self._res_vec_evals:4}        {self._res_m_evals:6}       {self._curr_grad_norm:+12.10f}')
+
+                if (self._print_summary_file):
+                    f = open("summary.dat", "a", buffering=1)
+                    f.write(f'\n       {k:7}        {self._curr_energy:+12.12f}      {dE:+12.12f}      {self._res_vec_evals:4}        {self._res_m_evals:6}       {self._curr_grad_norm:+12.12f}')
+                    f.close()
+
+                self._prev_energy = self._curr_energy
+
+                self._tamps = list(res.x)
+
+                if self._optimizer.lower() in ['nelder-mead', 'powell', 'cobyla']:
+                    if abs(dE) <= self._opt_thresh:
+                        break
+                elif self._curr_grad_norm <= self._opt_thresh:
+                    break
+
+                self._t_diis.append(copy.deepcopy(res.x))
+                self._e_diis.append(np.subtract(self._t_diis[-1], self._t_diis[-2]))
+
+                if(k >= 1 and self._diis_max_dim >= 2):
+                    self._tamps = diis(self._diis_max_dim, self._t_diis, self._e_diis)
+
+                # account for paulit term measurement for gradient evaluations
+                # for m in range(len(self._tamps)):
+                #     self._n_pauli_trm_measures += self._Nm[m] * self._Nl * res.njev
+
+            if hasattr(res, 'njev'):
+                for tmu in res.x:
+                    if(np.abs(tmu) > 1.0e-12):
+                        self._n_pauli_trm_measures += int(2 * self._Nl * res.njev)
+
+            self._Egs = res.fun
+            if(self._optimizer.lower() == 'powell'):
+                self._Egs = res.fun[()]
+            self._final_result = res
+            self._tamps = list(res.x)
+
+            self._n_classical_params = len(self._tamps)
+            self._n_cnot = self.build_Uvqc().get_num_cnots()
 
             self._n_pauli_trm_measures += int(self._Nl * res.nfev)
 
-
-        else:
-            print('  \n--> Begin opt with grad estimated using first-differences:')
-            print(f" Initial guess energy:              {init_gues_energy:+12.10f}")
-            res =  minimize(self.energy_feval, x0,
-                                    method=self._optimizer,
-                                    options=opts,
-                                    callback=self.report_iteration)
-
-            # account for pauli term measurement for energy evaluations
-            self._n_pauli_trm_measures += self._Nl * res.nfev
-
-        if(res.success):
-            print('  => Minimization successful!')
-        else:
-            print('  => WARNING: minimization result may not be tightly converged.')
-        print(f'  => Minimum Energy: {res.fun:+12.10f}')
-        self._Egs = res.fun
-        if(self._optimizer.lower() == 'powell'):
-            self._Egs = res.fun[()]
-        self._final_result = res
-        self._tamps = list(res.x)
-
-        self._n_classical_params = len(self._tamps)
-        self._n_cnot = self.build_Uvqc().get_num_cnots()
 
 
     def initialize_ansatz(self):
@@ -266,5 +356,3 @@ class UCCNVQE(UCCVQE):
         # else:
         #     return 0
         return 0
-
-UCCNVQE.diis_solve = optimizer.diis_solve

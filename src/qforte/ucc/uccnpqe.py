@@ -168,7 +168,7 @@ class UCCNPQE(UCCPQE):
         print('Number of non-zero res element evaluations:  ', int(self._res_vec_evals)*self._n_nonzero_params)
 
     def solve(self):
-        self.diis_solve(self.get_residual_vector)
+        self.jacobi_solver()
 
     def fill_excited_dets(self):
         for _, sq_op in self._pool_obj:
@@ -262,6 +262,7 @@ class UCCNPQE(UCCPQE):
 
             residuals.append(res_m)
 
+        self._res_vec_norm = np.linalg.norm(residuals)
         self._res_vec_evals += 1
         self._res_m_evals += len(self._tamps)
 
@@ -275,4 +276,4 @@ class UCCNPQE(UCCPQE):
             self._tops.append(l)
             self._tamps.append(0.0)
 
-UCCNPQE.diis_solve = optimizer.diis_solve
+UCCNPQE.jacobi_solver = optimizer.jacobi_solver

@@ -13,6 +13,7 @@ from qforte.experiment import *
 from qforte.utils.transforms import *
 from qforte.utils.state_prep import *
 from qforte.utils.trotterization import trotterize
+from qforte.utils.point_groups import sq_op_find_symmetry
 
 import numpy as np
 from scipy.optimize import minimize
@@ -83,7 +84,9 @@ class ADAPTVQE(UCCVQE):
             optimizer='BFGS',
             use_analytic_grad = True,
             use_cumulative_thresh = False,
-            add_equiv_ops = False):
+            add_equiv_ops = False,
+            mmcc = False,
+            dt=0.001):
 
         self._avqe_thresh = avqe_thresh
         self._opt_thresh = opt_thresh
@@ -94,6 +97,8 @@ class ADAPTVQE(UCCVQE):
         self._pool_type = pool_type
         self._use_cumulative_thresh = use_cumulative_thresh
         self._add_equiv_ops = add_equiv_ops
+        self._mmcc = mmcc
+        self._dt = dt
 
         self._results = []
         self._energies = []
@@ -119,6 +124,57 @@ class ADAPTVQE(UCCVQE):
 
         self._curr_grad_norm = 0.0
         self._prev_energy = self.energy_feval([])
+
+        if self._mmcc:
+
+            self._mpdenom = []
+            self._E_mmcc_mp = []
+            self._E_mmcc_en = []
+            self._mmcc_aux_excitation_indices = []
+            self._mmcc_aux_pool = qf.SQOpPool()
+
+            self._eiH, self._eiH_phase = trotterize(self._qb_ham, factor= self._dt*(0.0 + 1.0j), trotter_number=self._trotter_number)
+
+            self.build_orb_energies()
+
+            # create a complete pool of particle number, Sz, and spatial symmetry adapted second quantized operators
+            ref = sum([b << i for i, b in enumerate(self._ref)])
+            mask_alpha = 0x5555555555555555
+            mask_beta = mask_alpha << 1
+            nalpha = sum(self._ref[0::2])
+            nbeta = sum(self._ref[1::2])
+            idx = -1
+            for I in range(1 << self._nqb):
+                alphas = [int(j) for j in bin(I & mask_alpha)[2:]]
+                betas = [int(j) for j in bin(I & mask_beta)[2:]]
+                if sum(alphas) == nalpha and sum(betas) == nbeta:
+                    if sq_op_find_symmetry(self._sys.orb_irreps_to_int,
+                                           [len(alphas) - i - 1 for i, x in enumerate(alphas) if x],
+                                           [len(betas) -i - 1 for i, x in enumerate(betas) if x]) == 0:
+                        if idx == -1:
+                            # Currently, the first determinant satisfying the required symmetry criteria is the
+                            # HF determinant and is, thus, discarded
+                            idx += 1
+                            continue
+                        excit = bin(ref ^ I).replace("0b", "")
+                        occ_idx = [int(i) for i,j in enumerate(reversed(excit[-nalpha-nbeta:])) if int(j) == 1]
+                        unocc_idx = [int(i)+nalpha+nbeta for i,j in enumerate(reversed(excit[:-nalpha-nbeta])) if int(j) == 1]
+                        sq_op = qf.SQOperator()
+                        sq_op.add(+1.0, unocc_idx, occ_idx)
+                        sq_op.add(-1.0, occ_idx[::-1], unocc_idx[::-1])
+                        sq_op.simplify()
+                        self._mmcc_aux_pool.add_term(0.0, sq_op)
+                        self._mpdenom.append(sum(self._orb_e[x] for x in occ_idx) - sum(self._orb_e[x] for x in unocc_idx))
+                        self._mmcc_aux_excitation_indices.append(I)
+
+
+            self._epstein_nesbet = []
+            for i in self._mmcc_aux_pool.terms():
+                sq_op = i[1]
+                qc = qf.Computer(self._nqb)
+                qc.apply_circuit(self._Uprep)
+                qc.apply_operator(sq_op.jw_transform(self._qubit_excitations))
+                self._epstein_nesbet.append(qc.direct_op_exp_val(self._qb_ham))
 
         # Print options banner (should done for all algorithms).
         self.print_options_banner()
@@ -355,6 +411,30 @@ class ADAPTVQE(UCCVQE):
         self._grad_norms.append(curr_norm)
 
         self.conv_status()
+
+        if self._mmcc:
+
+            # do U^dag e^iH U |Phi_o> = |Phi_res>
+            U = self.ansatz_circuit()
+
+            qc_res = qf.Computer(self._nqb)
+            qc_res.apply_circuit(self._Uprep)
+            qc_res.apply_circuit(U)
+            qc_res.apply_circuit(self._eiH)
+            qc_res.apply_circuit(U.adjoint())
+
+            res_coeffs = [i / self._dt for i in qc_res.get_coeff_vec()]
+
+            mmcc_res = [res_coeffs[I] for I in self._mmcc_aux_excitation_indices]
+            mmcc_res_sq_over_mpdenom = [np.real(np.conj(mmcc_res[I]) * mmcc_res[I] / self._mpdenom[I]) for I in range(len(mmcc_res))]
+            if self._energies != []:
+                self._E_mmcc_mp.append(self._curr_energy + sum(mmcc_res_sq_over_mpdenom))
+                mmcc_res_sq_over_epstein_nesbet_denom = [np.real(np.conj(mmcc_res[I]) * mmcc_res[I] / (self._curr_energy - self._epstein_nesbet[I])) for I in range(len(mmcc_res))]
+                self._E_mmcc_en.append(self._curr_energy + sum(mmcc_res_sq_over_epstein_nesbet_denom))
+                print('##########')
+                print(self._E_mmcc_mp)
+                print(self._E_mmcc_en)
+                print('##########')
 
         if not self._converged:
             if(self._use_cumulative_thresh):
