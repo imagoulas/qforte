@@ -100,6 +100,8 @@ class ADAPTVQE(UCCVQE):
         self._mmcc = mmcc
         self._dt = dt
 
+        self._total_spin_squared = []
+
         self._results = []
         self._energies = []
         self._grad_norms = []
@@ -143,7 +145,6 @@ class ADAPTVQE(UCCVQE):
             mask_beta = mask_alpha << 1
             nalpha = sum(self._ref[0::2])
             nbeta = sum(self._ref[1::2])
-            idx = -1
             for I in range(1 << self._nqb):
                 alphas = [int(j) for j in bin(I & mask_alpha)[2:]]
                 betas = [int(j) for j in bin(I & mask_beta)[2:]]
@@ -151,21 +152,17 @@ class ADAPTVQE(UCCVQE):
                     if sq_op_find_symmetry(self._sys.orb_irreps_to_int,
                                            [len(alphas) - i - 1 for i, x in enumerate(alphas) if x],
                                            [len(betas) -i - 1 for i, x in enumerate(betas) if x]) == 0:
-                        if idx == -1:
-                            # Currently, the first determinant satisfying the required symmetry criteria is the
-                            # HF determinant and is, thus, discarded
-                            idx += 1
-                            continue
                         excit = bin(ref ^ I).replace("0b", "")
-                        occ_idx = [int(i) for i,j in enumerate(reversed(excit[-nalpha-nbeta:])) if int(j) == 1]
-                        unocc_idx = [int(i)+nalpha+nbeta for i,j in enumerate(reversed(excit[:-nalpha-nbeta])) if int(j) == 1]
-                        sq_op = qf.SQOperator()
-                        sq_op.add(+1.0, unocc_idx, occ_idx)
-                        sq_op.add(-1.0, occ_idx[::-1], unocc_idx[::-1])
-                        sq_op.simplify()
-                        self._mmcc_aux_pool.add_term(0.0, sq_op)
-                        self._mpdenom.append(sum(self._orb_e[x] for x in occ_idx) - sum(self._orb_e[x] for x in unocc_idx))
-                        self._mmcc_aux_excitation_indices.append(I)
+                        if excit != "0":
+                            occ_idx = [int(i) for i,j in enumerate(reversed(excit[-nalpha-nbeta:])) if int(j) == 1]
+                            unocc_idx = [int(i)+nalpha+nbeta for i,j in enumerate(reversed(excit[:-nalpha-nbeta])) if int(j) == 1]
+                            sq_op = qf.SQOperator()
+                            sq_op.add(+1.0, unocc_idx, occ_idx)
+                            sq_op.add(-1.0, occ_idx[::-1], unocc_idx[::-1])
+                            sq_op.simplify()
+                            self._mmcc_aux_pool.add_term(0.0, sq_op)
+                            self._mpdenom.append(sum(self._orb_e[x] for x in occ_idx) - sum(self._orb_e[x] for x in unocc_idx))
+                            self._mmcc_aux_excitation_indices.append(I)
 
 
             self._epstein_nesbet = []
@@ -192,8 +189,12 @@ class ADAPTVQE(UCCVQE):
 
         if (self._print_summary_file):
             f = open("summary.dat", "w+", buffering=1)
-            f.write(f"#{'Iter(k)':>8}{'E(k)':>14}{'N(params)':>17}{'N(CNOT)':>18}{'N(measure)':>20}\n")
-            f.write('#-------------------------------------------------------------------------------\n')
+            if not self._mmcc:
+                f.write(f"#{'Iter':>8}{'E':>14}{'N(params)':>17}{'N(CNOT)':>18}{'N(measure)':>20}\n")
+                f.write('#-------------------------------------------------------------------------------\n')
+            else:
+                print(f"{'Iter':>8}{'E':>19}{'E(MP)':>19}{'E(EN)':>19}{'N(params)':>12}{'N(CNOT)':>18}{'N(measure)':>20}")
+                print('-------------------------------------------------------------------------------------------------------------------')
 
         while not self._converged:
 
@@ -209,11 +210,22 @@ class ADAPTVQE(UCCVQE):
 
             self.solve()
 
+            # Compute epxectation value of S^2
+            U = self.ansatz_circuit()
+            comp = qf.Computer(self._nqb)
+            comp.apply_circuit(self._Uprep)
+            comp.apply_circuit(U)
+            self._total_spin_squared.append(comp.direct_op_exp_val(qf.total_spin_squared(self._nqb)).real)
+
             if(self._verbose):
                 print('\ntamplitudes for tops post solve: \n', np.real(self._tamps))
 
             if (self._print_summary_file):
-                f.write(f'  {avqe_iter:7}    {self._energies[-1]:+15.9f}    {len(self._tamps):8}        {self._n_cnot_lst[-1]:10}        {sum(self._n_pauli_trm_measures_lst):12}\n')
+                if not self._mmcc:
+                    f.write(f'  {avqe_iter:7}    {self._energies[-1]:+15.9f}    {len(self._tamps):8}        {self._n_cnot_lst[-1]:10}        {sum(self._n_pauli_trm_measures_lst):12}\n')
+                else:
+                    print(f' {avqe_iter:7}    {self._energies[-1]:+15.9f}    {self._E_mmcc_mp[-1]:+15.9f}    {self._E_mmcc_en[-1]:+15.9f}    {len(self._tamps):8}        {self._n_cnot_lst-1:10}        {sum(self._n_pauli_trm_measures_lst):12}')
+
 
             avqe_iter += 1
 
@@ -232,11 +244,19 @@ class ADAPTVQE(UCCVQE):
         self._Egs = self.get_final_energy()
 
         print('\n\n')
-        print(f"{'Iter(k)':>8}{'E(k)':>14}{'N(params)':>17}{'N(CNOT)':>18}{'N(measure)':>20}")
-        print('-------------------------------------------------------------------------------')
+        if not self._mmcc:
+            print(f"{'Iter':>8}{'E':>14}{'<S^2>':>11}{'N(params)':>17}{'N(CNOT)':>18}{'N(measure)':>20}")
+            print('-------------------------------------------------------------------------------')
 
-        for k, Ek in enumerate(self._energies):
-            print(f' {k:7}    {Ek:+15.9f}    {self._n_classical_params_lst[k]:8}        {self._n_cnot_lst[k]:10}        {sum(self._n_pauli_trm_measures_lst[:k+1]):12}')
+            for k, Ek in enumerate(self._energies):
+                print(f' {k:7}    {Ek:+15.9f}    {self._total_spin_squared[k]:+7.4f}    {self._n_classical_params_lst[k]:8}        {self._n_cnot_lst[k]:10}        {sum(self._n_pauli_trm_measures_lst[:k+1]):12}')
+        else:
+            print(f"{'Iter':>8}{'E':>19}{'E(MP)':>19}{'E(EN)':>19}{'<S^2>':>11}{'N(params)':>12}{'N(CNOT)':>18}{'N(measure)':>20}")
+            print('-------------------------------------------------------------------------------------------------------------------')
+
+            for k, Ek in enumerate(self._energies):
+                print(f' {k:7}    {Ek:+15.9f}    {self._E_mmcc_mp[k]:+15.9f}    {self._E_mmcc_en[k]:+15.9f}    {self._total_spin_squared[k]:+7.4f}    {self._n_classical_params_lst[k]:8}        {self._n_cnot_lst[k]:10}        {sum(self._n_pauli_trm_measures_lst[:k+1]):12}')
+
 
         self._n_classical_params = len(self._tamps)
         self._n_cnot = self._n_cnot_lst[-1]
@@ -431,10 +451,6 @@ class ADAPTVQE(UCCVQE):
                 self._E_mmcc_mp.append(self._curr_energy + sum(mmcc_res_sq_over_mpdenom))
                 mmcc_res_sq_over_epstein_nesbet_denom = [np.real(np.conj(mmcc_res[I]) * mmcc_res[I] / (self._curr_energy - self._epstein_nesbet[I])) for I in range(len(mmcc_res))]
                 self._E_mmcc_en.append(self._curr_energy + sum(mmcc_res_sq_over_epstein_nesbet_denom))
-                print('##########')
-                print(self._E_mmcc_mp)
-                print(self._E_mmcc_en)
-                print('##########')
 
         if not self._converged:
             if(self._use_cumulative_thresh):

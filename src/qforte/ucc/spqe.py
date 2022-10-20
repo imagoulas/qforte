@@ -17,6 +17,7 @@ from qforte.maths import optimizer
 import numpy as np
 from itertools import combinations
 from scipy.optimize import minimize
+from copy import deepcopy
 
 class SPQE(UCCPQE):
     """This class implements the selected projective quantum eigensolver (SPQE) for
@@ -63,6 +64,9 @@ class SPQE(UCCPQE):
             repeated_SD_pool=False,
             optimizer='Jacobi',
             mmcc = False,
+            excit_state_idx = 0,
+            Sz = 0,
+            n_electrons = None,
             use_cumulative_thresh=True):
 
         if(self._state_prep_type != 'occupation_list'):
@@ -89,6 +93,21 @@ class SPQE(UCCPQE):
             self._E_mmcc_en = []
             self._mmcc_aux_excitation_indices = []
             self._mmcc_aux_pool = qf.SQOpPool()
+        self._excit_state_idx = excit_state_idx
+        if n_electrons == None:
+            self._n_electrons = sum(self._ref)
+        elif not isinstance(n_electrons, int) or n_electrons < 1 or n_electrons > self._nqb:
+            raise TypeError("The number of electrons must be a positive integer less or equal to the number of spin-orbitals")
+        else:
+            self._n_electrons = n_electrons
+        if not isinstance(Sz, (int, float)) or Sz % 0.5 != 0.0 or abs(2 * Sz) > self._nqb:
+            raise TypeError("For this particular system, Sz can take values between " +
+                    str(-min(self._n_electrons, self._nqb - self._n_electrons) * 0.5) + " and " +
+                    str(min(self._n_electrons, self._nqb - self._n_electrons) * 0.5) + " with a step of 1!")
+        else:
+            self._Sz = Sz
+
+        self._total_spin_squared = []
 
         self._nbody_counts = []
         self._n_classical_params_lst = []
@@ -118,6 +137,55 @@ class SPQE(UCCPQE):
             if occupation:
                 self._nbody_counts.append(0)
 
+        if self._excit_state_idx != 0:
+            if not isinstance(self._excit_state_idx, int) or self._excit_state_idx < 0:
+                raise TypeError("The excited state index must be a non-negative integer!")
+
+            diag_h = []
+
+            ref = sum([b << i for i, b in enumerate(self._ref)])
+            mask_alpha = 0x5555555555555555
+            mask_beta = mask_alpha << 1
+            for I in range(1 << self._nqb):
+                alphas = [int(j) for j in bin(I & mask_alpha)[2:]]
+                betas = [int(j) for j in bin(I & mask_beta)[2:]]
+                if sum(alphas) + sum(betas) == self._n_electrons and (sum(alphas) - sum(betas))*0.5 == self._Sz:
+                    if sq_op_find_symmetry(self._sys.orb_irreps_to_int,
+                                           [len(alphas) - i - 1 for i, x in enumerate(alphas) if x],
+                                           [len(betas) -i - 1 for i, x in enumerate(betas) if x]) == self._irrep:
+                        excit = bin(ref ^ I).replace("0b", "")
+                        if excit != "0":
+                            occ_idx = [int(i) for i,j in enumerate(reversed(excit)) if int(j) == 1 and self._ref[i] == 1]
+                            unocc_idx = [int(i) for i,j in enumerate(reversed(excit)) if int(j) == 1 and self._ref[i] == 0]
+                            qc = qf.Computer(self._nqb)
+                            qc.apply_circuit(self._Uprep)
+                            for i in occ_idx + unocc_idx:
+                                qc.apply_gate(qf.gate('X', i))
+                            diag_h.append([np.real(qc.direct_op_exp_val(self._qb_ham)), occ_idx, unocc_idx])
+
+            diag_h = sorted(diag_h)
+
+            for i in diag_h[self._excit_state_idx-1][1]:
+                self._ref[i] = 0
+            for i in diag_h[self._excit_state_idx-1][2]:
+                self._ref[i] = 1
+
+            if self._Sz == 0:
+                ref_alpha = []
+                ref_beta = []
+                for i in range(0, len(self._ref), 2):
+                    ref_alpha.append(self._ref[i])
+                for i in range(1, len(self._ref), 2):
+                    ref_beta.append(self._ref[i])
+
+                if ref_alpha != ref_beta:
+                    spin_complement = 0
+                    for i in range(len(ref_alpha)):
+                        spin_complement += ref_beta[i] << (2*i)
+                        spin_complement += ref_alpha[i] << (2*i + 1)
+
+            self._Uprep = qf.build_Uprep(self._ref, self._state_prep_type)
+
         # create a pool of particle number, Sz, and spatial symmetry adapted second quantized operators
         # of maximum excitation rank max_excit_rank
         ref = sum([b << i for i, b in enumerate(self._ref)])
@@ -134,7 +202,7 @@ class SPQE(UCCPQE):
             print("\nWARNING: The entered maximum excitation rank exceeds the number of particles.\n"
                     "         Procceding with max_excit_rank = {0}.\n".format(max_excit_rank))
         self._pool_type = max_excit_rank
-        idx = -1
+        idx = 0
         # determinant id : excitation operator index
         self._excitation_dictionary = {}
         # list that holds the ids of determinants corresponding to operators in the pool
@@ -151,58 +219,58 @@ class SPQE(UCCPQE):
             if sum(alphas) == nalpha and sum(betas) == nbeta:
                 if sq_op_find_symmetry(self._sys.orb_irreps_to_int,
                                        [len(alphas) - i - 1 for i, x in enumerate(alphas) if x],
-                                       [len(betas) -i - 1 for i, x in enumerate(betas) if x]) == 0:
-                    if idx == -1:
-                        # Currently, the first determinant satisfying the required symmetry criteria is the
-                        # HF determinant and is, thus, discarded
-                        idx += 1
-                        continue
+                                       [len(betas) -i - 1 for i, x in enumerate(betas) if x]) == self._irrep:
                     excit = bin(ref ^ I).replace("0b", "")
-                    if int(excit.count('1')/2) <= self._pool_type:
-                        occ_idx = [int(i) for i,j in enumerate(reversed(excit[-nalpha-nbeta:])) if int(j) == 1]
-                        unocc_idx = [int(i)+nalpha+nbeta for i,j in enumerate(reversed(excit[:-nalpha-nbeta])) if int(j) == 1]
-                        if self._mmcc:
-                            self._mpdenom.append(sum(self._orb_e[x] for x in occ_idx) - sum(self._orb_e[x] for x in unocc_idx))
-                        if repeated_SD_pool:
+                    if excit != "0":
+                        if int(excit.count('1')/2) <= self._pool_type:
+                            occ_idx = [int(i) for i,j in enumerate(reversed(excit)) if int(j) == 1 and self._ref[i] == 1]
+                            unocc_idx = [int(i) for i,j in enumerate(reversed(excit)) if int(j) == 1 and self._ref[i] == 0]
+                            if self._mmcc:
+                                self._mpdenom.append(sum(self._orb_e[x] for x in occ_idx) - sum(self._orb_e[x] for x in unocc_idx))
+                            if repeated_SD_pool:
+                                sq_op = qf.SQOperator()
+                                sq_op.add(+1.0, unocc_idx, occ_idx)
+                                sq_op.add(-1.0, occ_idx[::-1], unocc_idx[::-1])
+                                sq_op.simplify()
+                                self._aux_pool_obj.add_term(0.0, sq_op)
+                                if len(occ_idx) > 2:
+                                    # find the double excitation that obeys the symmetry criteria and whose quantum circuit
+                                    # requires the smallest number of CNOT gates
+                                    distance = self._nqb - 1
+                                    for occ_comb in combinations(occ_idx, 2):
+                                        for unocc_comb in combinations(unocc_idx, 2):
+                                            if len([i for i in occ_comb if i%2==0]) == len([i for i in unocc_comb if i%2==0]):
+                                                if qf.sq_op_find_symmetry(self._sys.orb_irreps_to_int, occ_comb, unocc_comb) == 0:
+                                                    if max(unocc_comb) - min(occ_comb) <= distance:
+                                                        distance = max(unocc_comb) - min(occ_comb)
+                                                        occ_idx = list(occ_comb)
+                                                        unocc_idx = list(unocc_comb)
                             sq_op = qf.SQOperator()
                             sq_op.add(+1.0, unocc_idx, occ_idx)
                             sq_op.add(-1.0, occ_idx[::-1], unocc_idx[::-1])
                             sq_op.simplify()
-                            self._aux_pool_obj.add_term(0.0, sq_op)
-                            if len(occ_idx) > 2:
-                                # find the double excitation that obeys the symmetry criteria and whose quantum circuit
-                                # requires the smallest number of CNOT gates
-                                distance = self._nqb - 1
-                                for occ_comb in combinations(occ_idx, 2):
-                                    for unocc_comb in combinations(unocc_idx, 2):
-                                        if len([i for i in occ_comb if i%2==0]) == len([i for i in unocc_comb if i%2==0]):
-                                            if qf.sq_op_find_symmetry(self._sys.orb_irreps_to_int, occ_comb, unocc_comb) == 0:
-                                                if max(unocc_comb) - min(occ_comb) <= distance:
-                                                    distance = max(unocc_comb) - min(occ_comb)
-                                                    occ_idx = list(occ_comb)
-                                                    unocc_idx = list(unocc_comb)
-                        sq_op = qf.SQOperator()
-                        sq_op.add(+1.0, unocc_idx, occ_idx)
-                        sq_op.add(-1.0, occ_idx[::-1], unocc_idx[::-1])
-                        sq_op.simplify()
-                        self._pool_obj.add_term(0.0, sq_op)
-                        if self._mmcc:
-                            self._mmcc_aux_pool.add_term(0.0, sq_op)
-                        self._excitation_dictionary[I] = idx
-                        self._excitation_indices.append(I)
-                        self._mmcc_aux_excitation_indices.append(I)
-                        idx += 1
+                            self._pool_obj.add_term(0.0, sq_op)
+                            self._excitation_dictionary[I] = idx
+                            self._excitation_indices.append(I)
+                            if self._excit_state_idx != 0 and self._Sz == 0 and ref_alpha != ref_beta:
+                                if I == spin_complement:
+                                    self._tops.append(idx)
+                                    self._tamps.append(np.pi/4)
+                            if self._mmcc:
+                                self._mmcc_aux_pool.add_term(0.0, sq_op)
+                                self._mmcc_aux_excitation_indices.append(I)
+                            idx += 1
 
-                    if int(excit.count('1')/2) > self._pool_type and self._mmcc:
-                        occ_idx = [int(i) for i,j in enumerate(reversed(excit[-nalpha-nbeta:])) if int(j) == 1]
-                        unocc_idx = [int(i)+nalpha+nbeta for i,j in enumerate(reversed(excit[:-nalpha-nbeta])) if int(j) == 1]
-                        sq_op = qf.SQOperator()
-                        sq_op.add(+1.0, unocc_idx, occ_idx)
-                        sq_op.add(-1.0, occ_idx[::-1], unocc_idx[::-1])
-                        sq_op.simplify()
-                        self._mmcc_aux_pool.add_term(0.0, sq_op)
-                        self._mpdenom.append(sum(self._orb_e[x] for x in occ_idx) - sum(self._orb_e[x] for x in unocc_idx))
-                        self._mmcc_aux_excitation_indices.append(I)
+                        if int(excit.count('1')/2) > self._pool_type and self._mmcc:
+                            occ_idx = [int(i) for i,j in enumerate(reversed(excit)) if int(j) == 1 and self._ref[i] == 1]
+                            unocc_idx = [int(i) for i,j in enumerate(reversed(excit)) if int(j) == 1 and self._ref[i] == 0]
+                            sq_op = qf.SQOperator()
+                            sq_op.add(+1.0, unocc_idx, occ_idx)
+                            sq_op.add(-1.0, occ_idx[::-1], unocc_idx[::-1])
+                            sq_op.simplify()
+                            self._mmcc_aux_pool.add_term(0.0, sq_op)
+                            self._mpdenom.append(sum(self._orb_e[x] for x in occ_idx) - sum(self._orb_e[x] for x in unocc_idx))
+                            self._mmcc_aux_excitation_indices.append(I)
 
 
         if self._mmcc:
@@ -219,8 +287,7 @@ class SPQE(UCCPQE):
 
         self.print_options_banner()
 
-        spqe_iter = 0
-        hit_maxiter = 0
+        self._spqe_iter = 1
 
         if(self._print_summary_file):
             f = open("summary.dat", "w+", buffering=1)
@@ -229,7 +296,6 @@ class SPQE(UCCPQE):
 
         while not self._converged:
 
-            print('\n\n -----> SPQE iteration ', spqe_iter, ' <-----\n')
             self.update_ansatz()
 
             if self._converged:
@@ -241,24 +307,25 @@ class SPQE(UCCPQE):
 
             self.solve()
 
+            # Compute epxectation value of S^2
+            U = self.ansatz_circuit()
+            comp = qf.Computer(self._nqb)
+            comp.apply_circuit(self._Uprep)
+            comp.apply_circuit(U)
+            self._total_spin_squared.append(comp.direct_op_exp_val(qf.total_spin_squared(self._nqb)).real)
+
             if(self._verbose):
                 print('\ntamplitudes for tops post solve: \n', np.real(self._tamps))
 
             if(self._print_summary_file):
-                f.write(f'  {spqe_iter:7}    {self._energies[-1]:+15.9f}    {len(self._tamps):8}        {self._n_cnot_lst[-1]:10}        {sum(self._n_pauli_trm_measures_lst):12}\n')
-            spqe_iter += 1
+                f.write(f'  {self.spqe_iter:7}    {self._energies[-1]:+15.9f}    {len(self._tamps):8}        {self._n_cnot_lst[-1]:10}        {sum(self._n_pauli_trm_measures_lst[:k+1]):12}\n')
+            self._spqe_iter += 1
 
-            if spqe_iter > self._spqe_maxiter-1:
-                hit_maxiter = 1
-                break
 
         if(self._print_summary_file):
             f.close()
 
-        if hit_maxiter:
-            self._Egs = self.get_final_energy(hit_max_spqe_iter=1)
-
-        self._Egs = self.get_final_energy()
+        self._Egs = self._energies[-1]
 
         print("\n\n")
         print("---> Final n-body excitation counts in SPQE ansatz <---")
@@ -270,17 +337,17 @@ class SPQE(UCCPQE):
 
         print('\n\n')
         if not self._mmcc:
-            print(f"{'Iter':>8}{'E':>14}{'N(params)':>17}{'N(CNOT)':>18}{'N(measure)':>20}")
+            print(f"{'Iter':>8}{'E':>14}{'<S^2>':>11}{'N(params)':>17}{'N(CNOT)':>18}{'N(measure)':>20}")
             print('-------------------------------------------------------------------------------')
 
             for k, Ek in enumerate(self._energies):
-                print(f' {k:7}    {Ek:+15.9f}    {self._n_classical_params_lst[k]:8}        {self._n_cnot_lst[k]:10}        {sum(self._n_pauli_trm_measures_lst[:k+1]):12}')
+                print(f' {k+1:7}    {Ek:+15.9f}    {self._total_spin_squared[k]:+7.4f}    {self._n_classical_params_lst[k]:8}        {self._n_cnot_lst[k]:10}        {sum(self._n_pauli_trm_measures_lst[:k+1]):12}')
         else:
-            print(f"{'Iter':>8}{'E':>14}{'E_MMCC(MP)':>24}{'E_MMCC(EN)':>19}{'N(params)':>14}{'N(CNOT)':>18}{'N(measure)':>20}")
+            print(f"{'Iter':>8}{'E':>14}{'E_MMCC(MP)':>24}{'E_MMCC(EN)':>19}{'<S^2>':>11}{'N(params)':>14}{'N(CNOT)':>18}{'N(measure)':>20}")
             print('-----------------------------------------------------------------------------------------------------------')
 
             for k, Ek in enumerate(self._energies):
-                print(f' {k:7}    {Ek:+15.9f}    {self._E_mmcc_mp[k]:15.9f}    {self._E_mmcc_en[k]:15.9f}    {self._n_classical_params_lst[k]:8}        {self._n_cnot_lst[k]:10}        {sum(self._n_pauli_trm_measures_lst[:k+1]):12}')
+                print(f' {k+1:7}    {Ek:+15.9f}    {self._E_mmcc_mp[k]:15.9f}    {self._E_mmcc_en[k]:15.9f}    {self._total_spin_squared[k]:+7.4f}    {self._n_classical_params_lst[k]:8}        {self._n_cnot_lst[k]:10}        {sum(self._n_pauli_trm_measures_lst[:k+1]):12}')
 
         self._n_classical_params = len(self._tamps)
         self._n_cnot = self._n_cnot_lst[-1]
@@ -305,6 +372,13 @@ class SPQE(UCCPQE):
         print('\n\n               ==> SPQE options <==')
         print('---------------------------------------------------------')
         print('Trial reference state:                   ',  ref_string(self._ref, self._nqb))
+        print('Number of electrons:                     ',  self._n_electrons)
+        print('Sz:                                      ',  self._Sz)
+        print('State irreducible representation:        ',  self._sys._point_group[1][self._irrep])
+        if self._excit_state_idx == 0:
+            print('Excited state index:                      0 (ground state)')
+        else:
+            print('Excited state index:                     ', self._excit_state_idx, '(excited state)')
         print('Number of Hamiltonian Pauli terms:       ',  self._Nl)
         print('Trial state preparation method:          ',  self._state_prep_type)
         print('Trotter order (rho):                     ',  self._trotter_order)
@@ -348,7 +422,7 @@ class SPQE(UCCPQE):
     def solve(self):
         if self._optimizer.lower() == 'jacobi':
             self.jacobi_solver()
-        elif self._optimizer.lower() in ['nelder-mead', 'powell', 'bfgs']:
+        elif self._optimizer.lower() in ['nelder-mead', 'powell', 'bfgs', 'l-bfgs-b', 'cg', 'slsqp']:
             self.scipy_solve()
         else:
            raise NotImplementedError('Currently only Jacobi, Nelder-Mead, Powell, and BFGS solvers are implemented')
@@ -364,14 +438,25 @@ class SPQE(UCCPQE):
         opts['maxiter'] = self._opt_maxiter
 
         # Optimizer-specific options
+        if self._optimizer.lower() in ['bfgs', 'cg', 'l-bfgs-b']:
+            opts['gtol'] = self._opt_thresh
         if self._optimizer.lower() == 'nelder-mead':
             opts['fatol'] = self._opt_thresh
-        if self._optimizer.lower() in ['powell']:
+            opts['adaptive'] = True
+        if self._optimizer.lower() in ['powell', 'l-bfgs-b', 'slsqp']:
             opts['ftol'] = self._opt_thresh
 
         x0 = copy.deepcopy(self._tamps)
         self._prev_energy = self.energy_feval(x0)
         self._k_counter = 0
+
+        #if self._optimizer.lower() == 'nelder-mead':
+        #    res = minimize(self.get_sum_residual_square, x0,
+        #            method='BFGS',
+        #            options={'maxiter' : 1})
+
+        #    x0 = list(res.x)
+
 
         res = minimize(self.get_sum_residual_square, x0,
                 method=self._optimizer,
@@ -453,6 +538,7 @@ class SPQE(UCCPQE):
         qc_res.apply_circuit(self._eiH)
         qc_res.apply_circuit(U.adjoint())
 
+
         res_coeffs = [i / self._dt for i in qc_res.get_coeff_vec()]
 
         # build different res_sq list using M_omega
@@ -519,54 +605,55 @@ class SPQE(UCCPQE):
                 self._n_classical_params_lst.append(len(self._tops))
 
         else: # when M_omega == 'inf', proceed with standard SPQE
-            res_sq = [( np.real(np.conj(res_coeffs[I]) * res_coeffs[I]), I) for I in self._excitation_indices]
+            res_sq = [( np.real(np.conj(res_coeffs[I]) * res_coeffs[I]), I) for I in set(self._excitation_indices) - {self._reversed_excitation_dictionary[i] for i in self._tops}]
             res_sq.sort()
             self._curr_res_sq_norm = sum(rmu_sq[0] for rmu_sq in res_sq)
 
-            print('  \n--> Begin selection opt with residual magnitudes |r_mu|:')
-            print('  Initial guess energy: ', round(init_gues_energy,10))
-            print(f'  Norm of res vec:      {np.sqrt(self._curr_res_sq_norm):14.12f}')
-
             self.conv_status()
 
-            #if not self._converged:
-            if self._verbose:
-                print('\n')
-                print('     op index (Imu)           Residual Factor')
-                print('  -----------------------------------------------')
-            res_sq_sum = 0.0
+            if not self._converged:
+                print('\n\n -----> SPQE iteration ', self._spqe_iter, ' <-----\n')
+                print('  \n--> Begin selection opt with residual magnitudes |r_mu|:')
+                print('  Initial guess energy: ', round(init_gues_energy,10))
+                print(f'  Norm of res vec:      {np.sqrt(self._curr_res_sq_norm):14.12f}')
 
-            if(self._use_cumulative_thresh):
-                # Make a running list of operators. When the sum of res_sq exceeds the target, every operator
-                # from here out is getting added to the ansatz..
-                temp_ops = []
-                for rmu_sq, op_idx in res_sq:
-                    res_sq_sum += rmu_sq
-                    if res_sq_sum > (self._spqe_thresh * self._spqe_thresh):
-                        if(self._verbose):
-                            print(f"  {self._excitation_dictionary[op_idx]:10}                  {np.real(rmu_sq):14.12f}"
-                                  f"   {self._pool_obj[self._excitation_dictionary[op_idx]][1].str()}" )
-                        if self._excitation_dictionary[op_idx] not in self._tops:
-                            temp_ops.append(self._excitation_dictionary[op_idx])
-                            self._nbody_counts[len(self._pool_obj[self._excitation_dictionary[op_idx]][1].terms()[0][1]) - 1] += 1
+                if self._verbose:
+                    print('\n')
+                    print('     op index (Imu)           Residual Factor')
+                    print('  -----------------------------------------------')
+                res_sq_sum = 0.0
 
-                for temp_op in temp_ops[::-1]:
-                    self._tops.insert(0, temp_op)
-                    self._tamps.insert(0, 0.0)
+                if(self._use_cumulative_thresh):
+                    # Make a running list of operators. When the sum of res_sq exceeds the target, every operator
+                    # from here out is getting added to the ansatz..
+                    temp_ops = []
+                    for rmu_sq, op_idx in res_sq:
+                        res_sq_sum += rmu_sq
+                        if res_sq_sum > (self._spqe_thresh * self._spqe_thresh):
+                            if self._verbose:
+                                print(f"  {self._excitation_dictionary[op_idx]:10}                  {np.real(rmu_sq):14.12f}"
+                                      f"   {self._pool_obj[self._excitation_dictionary[op_idx]][1].str()}" )
+                            if self._excitation_dictionary[op_idx] not in self._tops:
+                                temp_ops.append(self._excitation_dictionary[op_idx])
+                                self._nbody_counts[len(self._pool_obj[self._excitation_dictionary[op_idx]][1].terms()[0][1]) - 1] += 1
 
-            else:
-                # Add the single operator with greatest rmu_sq not yet in the ansatz
-                res_sq.reverse()
-                for rmu_sq, op_idx in res_sq:
-                    print(f"  {self._excitation_dictionary[op_idx]:10}                  {np.real(rmu_sq)/(self._dt * self._dt):14.12f}")
-                    if self._excitation_dictionary[op_idx] not in self._tops:
-                        print('Adding this operator to ansatz')
-                        self._tops.insert(0, self._excitation_dictionary[op_idx])
+                    for temp_op in temp_ops[::-1]:
+                        self._tops.insert(0, temp_op)
                         self._tamps.insert(0, 0.0)
-                        self._nbody_counts[len(self._pool_obj[self._excitation_dictionary[op_idx]][1].terms()[0][1]) - 1] += 1
-                        break
 
-            self._n_classical_params_lst.append(len(self._tops))
+                else:
+                    # Add the single operator with greatest rmu_sq not yet in the ansatz
+                    res_sq.reverse()
+                    for rmu_sq, op_idx in res_sq:
+                        print(f"  {self._excitation_dictionary[op_idx]:10}                  {np.real(rmu_sq):14.12f}")
+                        if self._excitation_dictionary[op_idx] not in self._tops:
+                            print('Adding this operator to ansatz')
+                            self._tops.insert(0, self._excitation_dictionary[op_idx])
+                            self._tamps.insert(0, 0.0)
+                            self._nbody_counts[len(self._pool_obj[self._excitation_dictionary[op_idx]][1].terms()[0][1]) - 1] += 1
+                            break
+
+                self._n_classical_params_lst.append(len(self._tops))
 
             if self._mmcc:
                 mmcc_res = [res_coeffs[I] for I in self._mmcc_aux_excitation_indices]
@@ -592,23 +679,23 @@ class SPQE(UCCPQE):
     def conv_status(self):
         if abs(self._curr_res_sq_norm) < abs(self._spqe_thresh * self._spqe_thresh):
             self._converged = True
-            self._final_energy = self._energies[-1]
+            print("\n\n\n------------------------------------------------")
+            print("SPQE macro-iterations converged!")
+            print(f'||r|| = {np.sqrt(self._curr_res_sq_norm):8.6f}')
+            print("------------------------------------------------")
             #self._final_result = self._results[-1]
+        elif self._spqe_iter > self._spqe_maxiter:
+            print("\n\n\n------------------------------------------------")
+            print("Maximum number of SPQE macro-iterations reached!")
+            print(f'Current value of ||r||: {np.sqrt(self._curr_res_sq_norm):8.6f}')
+            print("------------------------------------------------")
+            self._converged = True
+        elif len(self._tops) == len(self._pool_obj):
+            print("\n\n\n------------------------------------------------")
+            print("Operator pool has been drained!")
+            print("------------------------------------------------")
+            self._converged = True
         else:
             self._converged = False
-
-    def get_final_energy(self, hit_max_spqe_iter=0):
-        """
-        Parameters
-        ----------
-        hit_max_spqe_iter : bool
-            Wether or not to use the SPQE has already hit the maximum
-            number of iterations.
-        """
-        if hit_max_spqe_iter:
-            print("\nSPQE at maximum number of iterations!")
-            self._final_energy = self._energies[-1]
-        else:
-            return self._final_energy
 
 SPQE.jacobi_solver = optimizer.jacobi_solver

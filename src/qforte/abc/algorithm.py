@@ -5,6 +5,7 @@ The abstract base classes inherited by all algorithm subclasses.
 """
 
 from abc import ABC, abstractmethod
+from copy import deepcopy
 import qforte as qf
 from qforte.utils.state_prep import *
 from qforte.utils.point_groups import sq_op_find_symmetry
@@ -84,7 +85,7 @@ class Algorithm(ABC):
 
         if self._state_prep_type == 'occupation_list':
             if(reference==None):
-                self._ref = system.hf_reference
+                self._ref = deepcopy(system.hf_reference)
             else:
                 if not (isinstance(reference, list)):
                     raise ValueError("occupation_list reference must be list of 1s and 0s.")
@@ -96,7 +97,7 @@ class Algorithm(ABC):
             if not isinstance(reference, qf.Circuit):
                 raise ValueError("unitary_circ reference must be a Circuit.")
 
-            self._ref = system.hf_reference
+            self._ref = deepcopy(system.hf_reference)
             self._Uprep = reference
 
         else:
@@ -231,6 +232,9 @@ class AnsatzAlgorithm(Algorithm):
 
     _qubit_excitations: bool
         Controls the use of qubit/fermionic excitations.
+
+    _multi_control: bool
+        Replaces multi-qubit-controlled Ry gate by an Ry gate
     """
 
     # TODO (opt major): write a C function that prepares this super efficiently
@@ -266,14 +270,14 @@ class AnsatzAlgorithm(Algorithm):
         else:
             raise ValueError('Invalid operator pool type specified.')
 
-        # If possible, impose symmetry restriction to operator pool
+        # Currently, only tottally symmetric operator pools are allowed
         # Currently, symmetry is supported for system_type='molecule' and build_type='psi4'
         if hasattr(self._sys, 'point_group'):
             temp_sq_pool = qf.SQOpPool()
             for sq_operator in self._pool_obj.terms():
                 create = sq_operator[1].terms()[0][1]
                 annihilate = sq_operator[1].terms()[0][2]
-                if sq_op_find_symmetry(self._sys.orb_irreps_to_int, create, annihilate) == self._irrep:
+                if sq_op_find_symmetry(self._sys.orb_irreps_to_int, create, annihilate) == 0:
                     temp_sq_pool.add(sq_operator[0], sq_operator[1])
             self._pool_obj = temp_sq_pool
 
@@ -301,7 +305,7 @@ class AnsatzAlgorithm(Algorithm):
 
         return val
 
-    def __init__(self, *args, compact_excitations=False, qubit_excitations=False, diis_max_dim=8, **kwargs):
+    def __init__(self, *args, compact_excitations=False, qubit_excitations=False, multi_control=True, diis_max_dim=8, **kwargs):
         super().__init__(*args, **kwargs)
         self._curr_energy = 0
         self._Nm = []
@@ -309,6 +313,7 @@ class AnsatzAlgorithm(Algorithm):
         self._tops = []
         self._pool_obj = qf.SQOpPool()
         self._compact_excitations = compact_excitations
+        self._multi_control = multi_control
         self._qubit_excitations = qubit_excitations
         self._diis_max_dim = diis_max_dim
 

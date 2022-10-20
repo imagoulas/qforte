@@ -5,7 +5,7 @@ Functions for constructing compact quantum circuits for fermioninc/qubit excitat
 import qforte as qf
 import numpy as np
 
-def compact_excitation_circuit(theta, creation, annihilation, qubit_excitations):
+def compact_excitation_circuit(theta, creation, annihilation, qubit_excitations, multi_control):
     """
     This function constructs compact quantum circuits for fermionic/qubit
     excitations of the form
@@ -31,6 +31,9 @@ def compact_excitation_circuit(theta, creation, annihilation, qubit_excitations)
 
     qubit_excitations: bool
         Controls the use of qubit vs fermionic excitations.
+
+    multi_control: bool
+        Replaces multi-qubit-controlled Ry gate by an Ry gate
 
     Returns
     =======
@@ -77,7 +80,7 @@ def compact_excitation_circuit(theta, creation, annihilation, qubit_excitations)
 
         circ.add(CNOT_stair)
 
-    circ.add(qubit_excitation(theta, creation_unique, annihilation_unique, gsd_control, gsd_sign, qubit_excitations))
+    circ.add(qubit_excitation(theta, creation_unique, annihilation_unique, gsd_control, gsd_sign, qubit_excitations, multi_control))
 
     # Add adjoint of CNOT staircase
     if not qubit_excitations:
@@ -147,7 +150,7 @@ def fermion_sign_circuit(creation, annihilation):
 
     return CNOT_circ
 
-def qubit_excitation(theta, creation, annihilation, gsd_control, gsd_sign, qubit_excitations):
+def qubit_excitation(theta, creation, annihilation, gsd_control, gsd_sign, qubit_excitations, multi_control):
     """
     Function that performs a "qubit" excitation. Note that, unless qubit_excitations=True,
     the resulting circuit is not equivalent to a pure qubit excitation since sign factors
@@ -178,6 +181,9 @@ def qubit_excitation(theta, creation, annihilation, gsd_control, gsd_sign, qubit
     qubit_excitations: bool
         Controls the use of qubit vs fermionic excitations.
 
+    multi_control: bool
+        Replaces multi-qubit-controlled Ry gate by an Ry gate
+
     Returns
     =======
 
@@ -195,7 +201,24 @@ def qubit_excitation(theta, creation, annihilation, gsd_control, gsd_sign, qubit
 
     CNOT_circ_adjoint = circ.adjoint()
 
-    circ.add(multi_qubit_controlled_Ry(theta, creation[0], creation[1:], annihilation, gsd_control, gsd_sign, qubit_excitations))
+    if multi_control:
+        circ.add(multi_qubit_controlled_Ry(theta, creation[0], creation[1:], annihilation, gsd_control, gsd_sign, qubit_excitations))
+    else:
+        sign = 1
+        if not qubit_excitations:
+            # In the case of fermionic excitations, there exists a sign factor that
+            # multiplies the angle theta of the multi-qubit-controlled Ry gate. The
+            # sign factor depends on the many-body rank of the excitation operator.
+            prefactor = -1
+            rank = len(annihilation)
+            if rank == 1:
+                prefactor = 1
+            if not rank%2 and not rank%4:
+                prefactor = 1
+            elif not (rank - 1)%2 and not (rank - 1)%4:
+                prefactor = 1
+            sign *= prefactor * gsd_sign
+        circ.add(qf.gate('Ry', creation[0], creation[0], sign * 2 * theta))
 
     circ.add(CNOT_circ_adjoint)
 

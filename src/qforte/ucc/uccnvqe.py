@@ -183,7 +183,7 @@ class UCCNVQE(UCCVQE):
                 opts['fatol'] = self._opt_ftol
             if self._optimizer.lower() in ['powell', 'l-bfgs-b', 'tnc', 'slsqp']:
                 opts['ftol'] = self._opt_ftol
-            if self._optimizer.lower() in ['l-bfgs-b', 'tnc']:
+            if self._optimizer.lower() in ['tnc']:
                 opts['maxfun']  = self._opt_maxiter
 
             x0 = copy.deepcopy(self._tamps)
