@@ -36,8 +36,7 @@ class UCC:
                 U.add(compact_excitation_circuit(tamp * self._pool_obj[top][1].terms()[1][0],
                                                         self._pool_obj[top][1].terms()[1][1],
                                                         self._pool_obj[top][1].terms()[1][2],
-                                                        self._qubit_excitations,
-                                                        self._multi_control))
+                                                        self._qubit_excitations))
             return U
 
         for tamp, top in zip(tamps, self._tops):

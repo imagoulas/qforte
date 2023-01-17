@@ -74,6 +74,8 @@ def jacobi_solver(self):
             self._tamps = diis(self._diis_max_dim, t_diis, e_diis)
 
     self._Egs = Ek
+    if k == self._opt_maxiter:
+        print("\nMaximum number of Jacobi iterations reached!")
     if hasattr(self, '_energies'):
         self._energies.append(Ek)
     if hasattr(self, '_n_classical_params'):

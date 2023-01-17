@@ -5,7 +5,7 @@ Functions for constructing compact quantum circuits for fermioninc/qubit excitat
 import qforte as qf
 import numpy as np
 
-def compact_excitation_circuit(theta, creation, annihilation, qubit_excitations, multi_control):
+def compact_excitation_circuit(theta, creation, annihilation, qubit_excitations):
     """
     This function constructs compact quantum circuits for fermionic/qubit
     excitations of the form
@@ -31,9 +31,6 @@ def compact_excitation_circuit(theta, creation, annihilation, qubit_excitations,
 
     qubit_excitations: bool
         Controls the use of qubit vs fermionic excitations.
-
-    multi_control: bool
-        Replaces multi-qubit-controlled Ry gate by an Ry gate
 
     Returns
     =======
@@ -80,7 +77,7 @@ def compact_excitation_circuit(theta, creation, annihilation, qubit_excitations,
 
         circ.add(CNOT_stair)
 
-    circ.add(qubit_excitation(theta, creation_unique, annihilation_unique, gsd_control, gsd_sign, qubit_excitations, multi_control))
+    circ.add(qubit_excitation(theta, creation_unique, annihilation_unique, gsd_control, gsd_sign, qubit_excitations))
 
     # Add adjoint of CNOT staircase
     if not qubit_excitations:
@@ -150,7 +147,7 @@ def fermion_sign_circuit(creation, annihilation):
 
     return CNOT_circ
 
-def qubit_excitation(theta, creation, annihilation, gsd_control, gsd_sign, qubit_excitations, multi_control):
+def qubit_excitation(theta, creation, annihilation, gsd_control, gsd_sign, qubit_excitations):
     """
     Function that performs a "qubit" excitation. Note that, unless qubit_excitations=True,
     the resulting circuit is not equivalent to a pure qubit excitation since sign factors
@@ -181,9 +178,6 @@ def qubit_excitation(theta, creation, annihilation, gsd_control, gsd_sign, qubit
     qubit_excitations: bool
         Controls the use of qubit vs fermionic excitations.
 
-    multi_control: bool
-        Replaces multi-qubit-controlled Ry gate by an Ry gate
-
     Returns
     =======
 
@@ -201,7 +195,7 @@ def qubit_excitation(theta, creation, annihilation, gsd_control, gsd_sign, qubit
 
     CNOT_circ_adjoint = circ.adjoint()
 
-    if multi_control:
+    if len(annihilation) < 1000:
         circ.add(multi_qubit_controlled_Ry(theta, creation[0], creation[1:], annihilation, gsd_control, gsd_sign, qubit_excitations))
     else:
         sign = 1
@@ -271,7 +265,12 @@ def multi_qubit_controlled_Ry(theta, target, control_creation, control_annihilat
 
     # using an ordering similar to Yordanov
     control_creation.reverse()
-    control_qubits = control_annihilation + control_creation + gsd_control
+    if len(control_annihilation) < 1000:
+        control_qubits = control_annihilation + control_creation + gsd_control
+        flag_control_creation = False
+    else:
+        control_qubits = control_annihilation
+        flag_control_creation = False
 
     num_Ry_gates = 1 << len(control_qubits)
 
@@ -301,7 +300,10 @@ def multi_qubit_controlled_Ry(theta, target, control_creation, control_annihilat
         for j, control in enumerate(control_qubits):
             if not (i+1)%(num_Ry_gates/(1<<j+1)):
                 if not (i+1)%(num_Ry_gates/2) or i == num_Ry_gates - 1:
-                    circ.add(qf.gate('CNOT', target, control))
+                    if flag_control_creation:
+                        circ.add(qf.gate('aCNOT', target, control))
+                    else:
+                        circ.add(qf.gate('CNOT', target, control))
                 elif gsd_control != []:
                     circ.add(qf.gate('CNOT', target, control))
                 else:

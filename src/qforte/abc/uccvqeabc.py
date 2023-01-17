@@ -175,8 +175,7 @@ class UCCVQE(VQE, UCC):
                 Umu.add(compact_excitation_circuit(-tamp * self._pool_obj[self._tops[mu + 1]][1].terms()[1][0],
                                                            self._pool_obj[self._tops[mu + 1]][1].terms()[1][1],
                                                            self._pool_obj[self._tops[mu + 1]][1].terms()[1][2],
-                                                           self._qubit_excitations,
-                                                           self._multi_control))
+                                                           self._qubit_excitations))
             else:
                 Umu, pmu = trotterize(Kmu_prev, factor=-tamp, trotter_number=self._trotter_number)
 

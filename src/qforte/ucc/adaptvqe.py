@@ -104,6 +104,7 @@ class ADAPTVQE(UCCVQE):
 
         self._results = []
         self._energies = []
+        self._energy_variance = []
         self._grad_norms = []
         self._tops = []
         self._tamps = []
@@ -217,6 +218,12 @@ class ADAPTVQE(UCCVQE):
             comp.apply_circuit(U)
             self._total_spin_squared.append(comp.direct_op_exp_val(qf.total_spin_squared(self._nqb)).real)
 
+            # Compute energy variance: <H^2> - <H>^2
+            H_sqrd = qf.QubitOperator()
+            H_sqrd.add_op(self._qb_ham)
+            H_sqrd.operator_product(self._qb_ham, True, True)
+            self._energy_variance.append(np.real(comp.direct_op_exp_val(H_sqrd) - self._energies[-1]**2))
+
             if(self._verbose):
                 print('\ntamplitudes for tops post solve: \n', np.real(self._tamps))
 
@@ -245,17 +252,17 @@ class ADAPTVQE(UCCVQE):
 
         print('\n\n')
         if not self._mmcc:
-            print(f"{'Iter':>8}{'E':>14}{'<S^2>':>11}{'N(params)':>17}{'N(CNOT)':>18}{'N(measure)':>20}")
+            print(f"{'Iter':>8}{'E':>14}{'<H^2> - <H>^2':>14}{'<S^2>':>11}{'N(params)':>17}{'N(CNOT)':>18}{'N(measure)':>20}")
             print('-------------------------------------------------------------------------------')
 
             for k, Ek in enumerate(self._energies):
-                print(f' {k:7}    {Ek:+15.9f}    {self._total_spin_squared[k]:+7.4f}    {self._n_classical_params_lst[k]:8}        {self._n_cnot_lst[k]:10}        {sum(self._n_pauli_trm_measures_lst[:k+1]):12}')
+                print(f' {k:7}    {Ek:+15.9f}    {self._energy_variance[k]:+15.9f}    {self._total_spin_squared[k]:+7.4f}    {self._n_classical_params_lst[k]:8}        {self._n_cnot_lst[k]:10}        {sum(self._n_pauli_trm_measures_lst[:k+1]):12}')
         else:
-            print(f"{'Iter':>8}{'E':>19}{'E(MP)':>19}{'E(EN)':>19}{'<S^2>':>11}{'N(params)':>12}{'N(CNOT)':>18}{'N(measure)':>20}")
+            print(f"{'Iter':>8}{'E':>19}{'<H^2> - <H>^2':>14}{'E(MP)':>19}{'E(EN)':>19}{'<S^2>':>11}{'N(params)':>12}{'N(CNOT)':>18}{'N(measure)':>20}")
             print('-------------------------------------------------------------------------------------------------------------------')
 
             for k, Ek in enumerate(self._energies):
-                print(f' {k:7}    {Ek:+15.9f}    {self._E_mmcc_mp[k]:+15.9f}    {self._E_mmcc_en[k]:+15.9f}    {self._total_spin_squared[k]:+7.4f}    {self._n_classical_params_lst[k]:8}        {self._n_cnot_lst[k]:10}        {sum(self._n_pauli_trm_measures_lst[:k+1]):12}')
+                print(f' {k:7}    {Ek:+15.9f}    {self._energy_variance[k]:+15.9f}    {self._E_mmcc_mp[k]:+15.9f}    {self._E_mmcc_en[k]:+15.9f}    {self._total_spin_squared[k]:+7.4f}    {self._n_classical_params_lst[k]:8}        {self._n_cnot_lst[k]:10}        {sum(self._n_pauli_trm_measures_lst[:k+1]):12}')
 
 
         self._n_classical_params = len(self._tamps)
